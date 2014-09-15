@@ -1877,7 +1877,7 @@ int main(int argc, char* argv[])
 				}						
 			}
 			//cout << calculationtime[sub_id] << endl;
-			//ofs.write( reinterpret_cast<char*>( &calculationtime[sub_id] ),  64 );			
+			//ofs.write( reinterpret_cast<char*>( &calculationtime[sub_id] ),  sizeof calculationtime[sub_id] );			
 		}
 	}	
 	ofs.close();
