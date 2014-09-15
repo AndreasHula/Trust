@@ -1625,7 +1625,7 @@ int main(int argc, char* argv[])
 	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> store_trustee_belief_parameters;	
 	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> store_investor_belief_parameters;	
 
-	ofstream ofs(stra, ofstream::out);	
+	ofstream ofs(stra, ios::out | ios::binary);	
 	int iteration = 1;
 	boost::array<int,1> multiplier;
 	multiplier[0]=1;
