@@ -1694,7 +1694,6 @@ int main(int argc, char* argv[])
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{	
 								trustee_belief_parameters[2][guilt_belief]+=trustee_choice_likelihood(Subject_Games[sub_id][0][time_step], guilt_belief);
-								store_trustee_belief_parameters[time_step][2][guilt_belief] = trustee_belief_parameters[2][guilt_belief];
 							}
 						}
 					
@@ -1746,7 +1745,6 @@ int main(int argc, char* argv[])
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{
 								trustee_belief_parameters[1][guilt_belief]+=array_pay[num_act + guilt_belief*noa + (trustee_planning-game-1)*noa*nob+Subject_Games[sub_id][0][time_step]];				
-								store_trustee_belief_parameters[time_step][1][guilt_belief] = trustee_belief_parameters[1][guilt_belief];
 							}
 						}
 		
@@ -1794,7 +1792,6 @@ int main(int argc, char* argv[])
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{
 								investor_belief_parameters[1][guilt_belief]+=array_pay[num_act + guilt_belief*noa + (investor_planning-game-1)*noa*nob+Subject_Games[sub_id][0][time_step]];
-								store_investor_belief_parameters[time_step][1][guilt_belief] = investor_belief_parameters[1][guilt_belief];								
 							}		
 						}
 
@@ -1825,7 +1822,6 @@ int main(int argc, char* argv[])
 										trustee_payoff[i]=holder[i];
 									}
 									investor_belief_parameters[0][guilt_belief] += trustee_payoff[Subject_Games[sub_id][1][time_step]];	
-									store_investor_belief_parameters[time_step][0][guilt_belief] = investor_belief_parameters[0][guilt_belief];								
 								}
 							}
 						}
@@ -1836,7 +1832,6 @@ int main(int argc, char* argv[])
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{		
 								investor_belief_parameters[2][guilt_belief]+=investor_choice_likelihood[guilt_belief](Subject_Games[sub_id][0][time_step], Subject_Games[sub_id][1][time_step]);
-								store_investor_belief_parameters[time_step][2][guilt_belief] = investor_belief_parameters[2][guilt_belief];
 
 							}
 						}						
@@ -1849,7 +1844,6 @@ int main(int argc, char* argv[])
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{			
 								trustee_belief_parameters[2][guilt_belief] +=investor_choice_likelihood[guilt_belief](Subject_Games[sub_id][0][time_step], Subject_Games[sub_id][1][time_step]);
-								store_trustee_belief_parameters[time_step][2][guilt_belief] = trustee_belief_parameters[2][guilt_belief];
 							}
 						}
 						
@@ -1859,10 +1853,17 @@ int main(int argc, char* argv[])
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{			
 								investor_belief_parameters[2][guilt_belief]+=investor_choice_likelihood[guilt_belief](Subject_Games[sub_id][0][time_step], Subject_Games[sub_id][1][time_step]);
-								store_investor_belief_parameters[time_step][2][guilt_belief] = investor_belief_parameters[2][guilt_belief];
 
 							}								
 						}
+						for(int level=0; level < 3; ++level)  
+						{
+							for(int belief=0; belief < nob; ++belief)
+							{					
+								store_investor_belief_parameters[time_step][level][belief]=investor_belief_parameters[level][belief];					
+								store_trustee_belief_parameters[time_step][level][belief]=trustee_belief_parameters[level][belief];	
+							}
+						}							
 					
 					}
 
