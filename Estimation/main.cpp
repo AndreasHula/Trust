@@ -1542,9 +1542,6 @@ int main(int argc, char* argv[])
 		{
 			Subject_Games[sub_id][0][turn]= *(int*)&melblock[il];	
 			il += sizeof *(int*)&melblock[il];			
-		}
-		for(int turn=0; turn <global_time_horizon; ++turn)
-		{
 			Subject_Games[sub_id][1][turn]=*(int*)&melblock[il];
 			il += sizeof *(int*)&melblock[il];
 		}
