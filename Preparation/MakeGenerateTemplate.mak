@@ -1,5 +1,6 @@
+
 #release variables
-#Directory for boost ("boostdirectory") and lib64 need to be adapted
+#Directory for boost ("boostdirectory") and lib64 and stdc++ need to be adapted
 FLAGS = -O3 -DNDEBUG -DBOOST_SYSTEM_STATIC_LINK=1 -DBOOST_THREAD_USE_LIB=1 -DDATE_TIME_INLINE
 LINKING = -L"/boostdirectory/boost/boost_1_55_0" -lboost_thread -lboost_random -lboost_system -L"/usr/lib64" -lpthread -lrt -L"/usr/lib/gcc/x86_64-redhat-linux/4.4.6" -lstdc++
 
