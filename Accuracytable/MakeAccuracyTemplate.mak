@@ -1,10 +1,12 @@
+BOOST = "/boostdirectory/boost/boost_1_55_0" #directory for boost library
+LIB64 = "/usr/lib64" #64 bit lib
+STD64 = "/usr/lib/gcc/x86_64-redhat-linux/4.4.6" #64 bit std
 #release variables
-#Directory for boost ("boostdirectory") and lib64 need to be adapted
 FLAGS = -O3 -DNDEBUG -DBOOST_SYSTEM_STATIC_LINK=1 -DBOOST_THREAD_USE_LIB=1 -DDATE_TIME_INLINE
-LINKING = -L"/boostdirectory/boost/boost_1_55_0" -lboost_thread -lboost_random -lboost_system -L"/usr/lib64" -lpthread -lrt -L"/usr/lib/gcc/x86_64-redhat-linux/4.4.6" -lstdc++
+LINKING = -L$(BOOST) -lboost_thread -lboost_random -lboost_system -L$(LIB64) -lpthread -lrt -L$(STD64) -lstdc++
 
 SOURCES = main.cpp RandomSingleton.cpp global.cpp
-INCLUDES = -I"/boostdirectory/boost/boost_1_55_0"
+INCLUDES = -I$(BOOST)
 
 EXECUTABLE = Accuracy.exe
 OBJ_DIR = objects
