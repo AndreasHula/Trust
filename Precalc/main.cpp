@@ -1,6 +1,3 @@
-#include "global.h"
-#include "memorypool.h"
-#include "investor.h"
 
 /*
 
@@ -558,12 +555,17 @@ the library. If this is what you want to do, use the GNU Lesser General
 Public License instead of this License. But first, please read
 <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 */
+#include "global.h"
+#include "memorypool.h"
+#include "investor.h"
+
+
 
 int main(int argc, char* argv[])
 {	
 	
 
-	boost::array<boost::array<double, nob>, 3> investor_belief_parameters;
+	boost::array<boost::array<double, nob>, 3> investor_belief_parameters; //initialize beliefs
 	for(int level=0; level < 3; ++level)  
 	{
 		for(int belief=0; belief < nob; ++belief)
@@ -573,13 +575,13 @@ int main(int argc, char* argv[])
 	}
 
 	
-	MEMORY_POOL<Value_Node> mempool;
+	MEMORY_POOL<Value_Node> mempool;	//create pool for whole level 0 precalculated tree
 
 
-	Value_Node* tree_root = level_0_investor(global_time_horizon, investor_belief_parameters,  mempool);
+	Value_Node* tree_root = level_0_investor(global_time_horizon, investor_belief_parameters,  mempool); //run level 0 investor precalculation for all guilt types
 
 	
-	//investor resultate anzeigen
+	// Show some exemplary action probabilities. Here: guilt 0, planning 0 investor action probabilities, at given softmax temperature
 	cout << "\npayoff of root: " << endl;
 	for(int i = 0; i < noa; ++i)
 	{
