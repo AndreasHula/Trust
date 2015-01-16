@@ -1,6 +1,3 @@
-#include "global.h"
-#include "memorypool.h"
-
 
 // Multiround Trustgame Estimation by A.Hula, with eternal gratefulness to A.Morhammer 
 // Current Version, 9.September.2014
@@ -561,512 +558,525 @@ the library. If this is what you want to do, use the GNU Lesser General
 Public License instead of this License. But first, please read
 <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 */
+#include "global.h"
+#include "memorypool.h"
 
-Matrix initialize_trustee_utility(int trustee_guilt)
+
+// Multiround Trustgame Maximum Likelihood Estimation by A.Hula, with eternal gratefulness to A.Morhammer 
+// for support with C++. Based on the POMCP algorithm
+// Current Version, 13.January.2015
+
+//-------------------------------------------------- Utilities Block ------------------------------------------------------------------------------------------
+Matrix initialize_trustee_utility(int trustee_guilt) //Calculate Trustee utility for 3 possible guilt values
 {
-	Matrix ut = Zero_matrix(noa, 5);
-	for(Matrix::size_type money_invested = 0; money_invested < ut.size1(); ++money_invested)
+	Matrix ut = Zero_matrix(noa, 5); //initialize utility matrix, conditional on noa possible investor actions and calculate up to 5 possible trustee responses
+	for(Matrix::size_type money_invested = 0; money_invested < ut.size1(); ++money_invested) //loop over possible investments
 	{
-		for(Matrix::size_type response = 0; response < nor(money_invested); ++response)
+		for(Matrix::size_type response = 0; response < nor(money_invested); ++response) //number of responses for the given investment is encoded in nor(money_invested)
 		{
-			int money_kept = 5*max_amount - 5*money_invested;
-			int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6.0);
-			int total_profit_investor = money_kept + money_returned;
-			double believed_guilt = static_cast<double>(trustee_guilt);
-			int total_profit_trustee = rbf*5*money_invested - money_returned;
+			int money_kept = 5*max_amount - 5*money_invested; //amount investor kept
+			int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6.0); //amount trustee returned. discretized into categories 0, 1/6, 2/6, 4/6, 5/6
+			int total_profit_investor = money_kept + money_returned; //final amount with investor
+			double believed_guilt = static_cast<double>(trustee_guilt); //transform guilt parameter to double
+			int total_profit_trustee = rbf*5*money_invested - money_returned; //final amount with trustee
 			
-			ut(money_invested,response) = (total_profit_trustee -  believed_guilt*(0.1*believed_guilt+0.3)  * max(total_profit_trustee - total_profit_investor, 0));			
+			ut(money_invested,response) = (total_profit_trustee -  believed_guilt*(0.1*believed_guilt+0.3)  * max(total_profit_trustee - total_profit_investor, 0));	//Fehr-Schmidt utility of trustee		
 		}
 	}
 	
-	return ut;
+	return ut; //output utility matrix
 }
 
-Matrix initialize_trustee_probabilities(Matrix const& ut)
+Matrix initialize_trustee_probabilities(Matrix const& ut) //Calculate return probabilities of a level -1 trustee (return probabilities on immediate utilities)
 {
-	Matrix trustee_probabilities = Zero_matrix(noa, 5);
+	Matrix trustee_probabilities = Zero_matrix(noa, 5); //initialize response probability (up to 5 possible responses), conditional on noa possible investor actions. 
 	
-	for(Matrix::size_type money_invested = 0; money_invested < trustee_probabilities.size1(); ++money_invested)
+	for(Matrix::size_type money_invested = 0; money_invested < trustee_probabilities.size1(); ++money_invested) //loop over possible investments
 	{
-		double sum = 0.0;
-		for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
+		double sum = 0.0; //create holder sum for logistic softmax values
+		for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned) //sum over all possible returns (nor(money_invested))
 		{
-			sum += exp(1.0/temperature*ut(money_invested, money_returned));
+			sum += exp(1.0/temperature*ut(money_invested, money_returned)); //sum up exponential utilities, rescaled by softmax temperature parameter
 		}
 		
-		for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
+		for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned) //calculate actual response probability for level -1 trustee model
 		{
-			trustee_probabilities(money_invested, money_returned) = exp(1.0/temperature*ut(money_invested, money_returned))/sum;
+			trustee_probabilities(money_invested, money_returned) = exp(1.0/temperature*ut(money_invested, money_returned))/sum; //calculate response probability as exponential utility divided by the sum
+																																// of all exponential utilities.
 		}
 	}
 	
-	return trustee_probabilities;
+	return trustee_probabilities; //output response probabilities
 }
 
-Matrix initialize_trustee_rollout_likelihood(Matrix const& trustee_probabilities, Index_vector const& max_ut_index)
+Index_vector initialize_max_ut_index(const Matrix& ut) //calculate maximum trustee utility, for use in epsilon greedy mechanism
 {
-	Matrix trustee_rollout_likelihood = Zero_matrix(noa, 5);
-	for(Matrix::size_type money_invested = 0; money_invested < trustee_rollout_likelihood.size1(); ++money_invested)
-	{	
-		boost::numeric::ublas::matrix_row<Matrix> row(trustee_rollout_likelihood, money_invested);
-		greedy_probabilities(row.begin(), row.begin()+nor(money_invested), max_ut_index[money_invested]);
-	}
-	
-	return trustee_rollout_likelihood;
-}
-
-Index_vector initialize_max_ut_index(const Matrix& ut)
-{
-	Index_vector ut_max(noa, 0); //Matrix containing the max utility responses of the trustee to a given offer
-	for(Index_vector::size_type money_invested = 0; money_invested < ut_max.size(); ++money_invested)
+	Index_vector ut_max(noa, 0); //create vector to store max index for a given utility ut and all possible investor offers
+	for(Index_vector::size_type money_invested = 0; money_invested < ut_max.size(); ++money_invested) //loop over all possible investment
 	{
-		double max = 0.0;
-		Matrix::size_type max_index = 0;
-		for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
+		double max = 0.0; //holder variable for the maximum value
+		Matrix::size_type max_index = 0; //initialize max index
+		for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned) //consider all possible responses (nor)
 		{
 			if(max < ut(money_invested, money_returned))
 			{
-				max = ut(money_invested, money_returned);
-				max_index = money_returned;
+				max = ut(money_invested, money_returned); //if utility is better than the max so far, make this utility the new max
+				max_index = money_returned; //keep the proper index as best response choice
 			}
 		}
-		ut_max[money_invested] = max_index;
+		ut_max[money_invested] = max_index; //save best response, given a certain investir action
 	}
 	
-	return ut_max;
+	return ut_max; //return best responses
 }
 
-Matrix initialize_offer_utility(Matrix_vector const& investor_choice_likelihood)
+Matrix initialize_trustee_rollout_likelihood( Index_vector const& max_ut_index) //calcuate response probabilities during rollout (epsilon-greedy mechanism)
 {
-	Matrix_vector uipt_init(nob, Zero_matrix(noa, 5)); //utility of the investor as perceived by the trustee given a belief 
-	for(Matrix_vector::size_type b = 0; b < uipt_init.size(); ++b)
+	Matrix trustee_rollout_likelihood = Zero_matrix(noa, 5); //initialize greedy response probabilities
+	for(Matrix::size_type money_invested = 0; money_invested < trustee_rollout_likelihood.size1(); ++money_invested) //consider all possible investments
+	{	
+		boost::numeric::ublas::matrix_row<Matrix> row(trustee_rollout_likelihood, money_invested); //extract a row from trustee rollout likelihood
+		greedy_probabilities(row.begin(), row.begin()+nor(money_invested), max_ut_index[money_invested]); //fill row with epsilon-greedy probabilities, using function in global  
+	}
+	
+	return trustee_rollout_likelihood; //return epsilon-greedy response probabilities
+}
+
+
+Matrix initialize_offer_utility(Matrix_vector const& investor_choice_likelihood) //investor offer utility, marginalizing over all possible responses & trustee types (level -1 offer utility)
+{
+	Matrix_vector uipt_init(nob, Zero_matrix(noa, 5)); //create investor utility for any possible investor type nob
+	for(Matrix_vector::size_type b = 0; b < uipt_init.size(); ++b) //loop over all possible investor types
 	{
-		for(Matrix::size_type money_invested = 0; money_invested < uipt_init[b].size1(); ++money_invested)
+		for(Matrix::size_type money_invested = 0; money_invested < uipt_init[b].size1(); ++money_invested) //consider all possible investments
 		{
-			for(Matrix::size_type response = 0; response < nor(money_invested); ++response)
+			for(Matrix::size_type response = 0; response < nor(money_invested); ++response) //consider all possible responses
 			{
-				int money_kept = 5*max_amount - 5*money_invested;
-				int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6);
-				int total_profit_trustee = rbf *5* money_invested - money_returned;
-				int total_profit_investor = money_kept + money_returned;
-				double believed_guilt = static_cast<double>(b);
-				uipt_init[b](money_invested, response) = (total_profit_investor -  believed_guilt*(0.1*believed_guilt+0.3)  * max(total_profit_investor - total_profit_trustee, 0));
+				int money_kept = 5*max_amount - 5*money_invested; //money kept by investor
+				int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6); //trustee response possibilities 0, 1/6, 2/6, 3/6, 4/6
+				int total_profit_trustee = rbf *5* money_invested - money_returned; //total payoff trustee
+				int total_profit_investor = money_kept + money_returned; //total payoff investor
+				double believed_guilt = static_cast<double>(b); //transform guilt to double
+				uipt_init[b](money_invested, response) = (total_profit_investor -  believed_guilt*(0.1*believed_guilt+0.3) * max(total_profit_investor - total_profit_trustee, 0)); //Fehr-Schmidt utility of
+																																													// possible investor type
 			}
 		}
 	}
 	
-	Matrix offer_utility = Zero_matrix(noa, nob);
-	for(Matrix::size_type investor_guilt = 0; investor_guilt < nob; ++investor_guilt)
+	Matrix offer_utility = Zero_matrix(noa, nob); //marginalized offer utility for any possible investor type
+	for(Matrix::size_type investor_guilt = 0; investor_guilt < nob; ++investor_guilt) //calculate for any possible investor type
 	{
-		for(Matrix::size_type money_invested = 0; money_invested < noa; ++money_invested)
+		for(Matrix::size_type money_invested = 0; money_invested < noa; ++money_invested) //all possible investments
 		{
-			for(int trustee_guilt = 0; trustee_guilt < offer_utility.size2(); ++trustee_guilt)
+			for(int trustee_guilt = 0; trustee_guilt < offer_utility.size2(); ++trustee_guilt) //all possible trustee guilts
 			{
-				for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
+				for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned) //all possible responses
 				{
 					offer_utility(money_invested,investor_guilt) += 1.0/(nob) *
 					                                                uipt_init[investor_guilt](money_invested,money_returned) *
-																	investor_choice_likelihood[trustee_guilt](money_invested,money_returned);
+																	investor_choice_likelihood[trustee_guilt](money_invested,money_returned); //marginal offer utility, given response likelihood and possible trustee types
 				}
 			}
 			
 		}
 	}
 	
-	return offer_utility;
+	return offer_utility; //return marginalized investor offer utility (level -1 investor offer utility)
 }
 
-Matrix initialize_trustee_choice_likelihood(Matrix const& offer_utility)
+Matrix initialize_trustee_choice_likelihood(Matrix const& offer_utility) //Calculate how likely the level 0 trustee thinks, a given next offer will be
 {
-	Matrix trustee_choice_likelihood = Zero_matrix(noa, nob);
-	for(Matrix::size_type investor_guilt = 0; investor_guilt < trustee_choice_likelihood.size2(); ++investor_guilt)
+	Matrix trustee_choice_likelihood = Zero_matrix(noa, nob); //initialize offer likelihoods for all investor types
+	for(Matrix::size_type investor_guilt = 0; investor_guilt < trustee_choice_likelihood.size2(); ++investor_guilt) //consider every investor type
 	{
-		double sum = 0.0;
-		for(Matrix::size_type money_invested = 0; money_invested < trustee_choice_likelihood.size1(); ++money_invested)
+		double sum = 0.0; //keep sum of exponential utilities
+		for(Matrix::size_type money_invested = 0; money_invested < trustee_choice_likelihood.size1(); ++money_invested) //consider every possible investment
 		{
-			sum += exp(1.0/temperature*offer_utility(money_invested, investor_guilt));
+			sum += exp(1.0/temperature*offer_utility(money_invested, investor_guilt)); //sum all exponential utilities
 		}
 		
-		for(Matrix::size_type money_invested = 0; money_invested < trustee_choice_likelihood.size1(); ++money_invested)
+		for(Matrix::size_type money_invested = 0; money_invested < trustee_choice_likelihood.size1(); ++money_invested)//consider every possible investment
 		{
-			trustee_choice_likelihood(money_invested, investor_guilt) = exp(1.0/temperature*offer_utility(money_invested, investor_guilt))/sum;
+			trustee_choice_likelihood(money_invested, investor_guilt) = exp(1.0/temperature*offer_utility(money_invested, investor_guilt))/sum; //calcualte individual offer likelihood given some investor guilt
 		}
 	}
 	
-	return trustee_choice_likelihood;
+	return trustee_choice_likelihood; //return all possible offer likelihoods
 }
 
-
-boost::array<int, global_time_horizon> custom_sort(boost::array<int, global_time_horizon> hist, int time)
+boost::array<int, global_time_horizon> custom_sort(boost::array<int, global_time_horizon> hist, int time) //provisorial sort function of action or response history, up to time "time"
 {
-	boost::array<int, global_time_horizon> sorted_hist;
-	for(int ind=0; ind < global_time_horizon; ++ind)
+	boost::array<int, global_time_horizon> sorted_hist; //create a holder for the sorted hist
+	for(int ind=0; ind < global_time_horizon; ++ind) //initialize boost array
 	{	
 		sorted_hist[ind]=0;
 	}
 
-	boost::array<int, global_time_horizon> calc_hist;	
+	boost::array<int, global_time_horizon> calc_hist;	//create a second holder, for use during the sort procedure
 	for(int ind=0; ind < global_time_horizon; ++ind)
 	{
-		calc_hist[ind]=hist[ind];
+		calc_hist[ind]=hist[ind]; //initialize with the history to be sorted
 	}	
 
-	int max_ind;
-	for(int index = time; 0<=index ; --index)
+	int max_ind; //keep the highest value in the list for sorting purposes
+	for(int index = time; 0<=index ; --index) //max element needs to go in the last place, then sort smaller values before that
 	{
-		for(int run =0; run <= index; ++run) 
+		for(int run =0; run <= index; ++run) //max search not a min search
 		{
-			max_ind =(sorted_hist[index] > calc_hist[run] ? max_ind:run);
-			sorted_hist[index] = (sorted_hist[index] > calc_hist[run] ? sorted_hist[index]:calc_hist[run]);
+			max_ind =(sorted_hist[index] > calc_hist[run] ? max_ind:run); //note if sorted hist[index] is not the maximum value -> keep max ind 
+			sorted_hist[index] = (sorted_hist[index] > calc_hist[run] ? sorted_hist[index]:calc_hist[run]);//write the maximum value remaining value in hist into the place "index"
 		}
-		calc_hist[max_ind]=calc_hist[index];
+		calc_hist[max_ind]=calc_hist[index]; //replace current max position with the element that was last in the list
 		max_ind=0;
 	}
 	
-	return sorted_hist;
+	return sorted_hist; //return sorted history
 }
 
-int mini(int no_one, int no_two)
+int mini(int no_one, int no_two) //calculate minimum
 {
-	int min = ( no_one < no_two ? no_one:no_two);
+	int min = ( no_one < no_two ? no_one:no_two); //return the smaller of both elements
 	return min;
 }
 
-
-Matrix initialize_ui_init(int guilt)
+Matrix initialize_ui_init(int guilt) //calculate investor utility for a given guilt value
 {
-	Matrix ui_init = Zero_matrix(noa, 5);
-	for(Matrix::size_type money_invested = 0; money_invested < ui_init.size1(); ++money_invested)
+	Matrix ui_init = Zero_matrix(noa, 5); //initialize utility matrix for noa possible investments and up to 5 possible responses
+	for(Matrix::size_type money_invested = 0; money_invested < ui_init.size1(); ++money_invested) //loop over all possible investments
 	{
-		for(Matrix::size_type response = 0; response < nor(money_invested); ++response)
+		for(Matrix::size_type response = 0; response < nor(money_invested); ++response) //consider all nor possible responses
 		{
-			int money_kept = 5*max_amount - 5*money_invested;
-			int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6);
-			int total_profit_investor = money_kept + money_returned;
-			double believed_guilt = static_cast<double>(guilt);
-			int total_profit_trustee = rbf*5*money_invested - money_returned;
+			int money_kept = 5*max_amount - 5*money_invested; //money kept by investor
+			int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6); //amount returned by trustee
+			int total_profit_investor = money_kept + money_returned; //total payoff investor
+			double believed_guilt = static_cast<double>(guilt); //transform guilt to double
+			int total_profit_trustee = rbf*5*money_invested - money_returned; //total payoff trustee
 			
-			ui_init(money_invested,response) = (total_profit_investor -  believed_guilt*(0.1*believed_guilt+0.3)  * max(total_profit_investor - total_profit_trustee, 0));
+			ui_init(money_invested,response) = (total_profit_investor -  believed_guilt*(0.1*believed_guilt+0.3)  * max(total_profit_investor - total_profit_trustee, 0)); //investor Fehr-Schmidt utility for given exchange
 		}
 	}
 	
-	return ui_init;
+	return ui_init; //return utilities
 }
 
-Matrix_vector initialize_utpi_init()
+Matrix_vector initialize_utpi_init() //possible trustee utilities from the point of view of the investor
 {
-    Matrix_vector utpi_init(nob, Zero_matrix(noa, 5)); //utility of the trustee as perceived by the investor given a belief (either 0 = greedy, or 1 = cooperative)
-	for(Matrix_vector::size_type b = 0; b < utpi_init.size(); ++b)
+    Matrix_vector utpi_init(nob, Zero_matrix(noa, 5)); //utility of the trustee as perceived by the investor given a belief 
+	for(Matrix_vector::size_type b = 0; b < utpi_init.size(); ++b) //loop over all possible trustee types
 	{
-		for(Matrix::size_type money_invested = 0; money_invested < utpi_init[b].size1(); ++money_invested)
+		for(Matrix::size_type money_invested = 0; money_invested < utpi_init[b].size1(); ++money_invested) //possible investments
 		{
-			for(Matrix::size_type response = 0; response < nor(money_invested); ++response)
+			for(Matrix::size_type response = 0; response < nor(money_invested); ++response) //possible responses
 			{
-				int money_kept = 5*max_amount - 5*money_invested;
-				int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6);
-				int total_profit_trustee = rbf * 5*money_invested - money_returned;
-				int total_profit_investor = money_kept + money_returned;
-				double believed_guilt = static_cast<double>(b);
-				utpi_init[b](money_invested, response) = (total_profit_trustee -  believed_guilt*(0.1*believed_guilt+0.3)  * max(total_profit_trustee - total_profit_investor, 0));
+				int money_kept = 5*max_amount - 5*money_invested; //money kept by investor
+				int money_returned = ceil(static_cast<double>(rbf*5*money_invested*response)/6); //amount returned by trustee
+				int total_profit_trustee = rbf * 5*money_invested - money_returned; //total trustee payoff
+				int total_profit_investor = money_kept + money_returned; //total investor payoff
+				double believed_guilt = static_cast<double>(b); //guilt transformed to double
+				utpi_init[b](money_invested, response) = (total_profit_trustee -  believed_guilt*(0.1*believed_guilt+0.3) * max(total_profit_trustee - total_profit_investor, 0)); //trustee payoff given guilt parameter b
 			}
 		}
 	}
 	
-	return utpi_init;
+	return utpi_init; //return possible trustee utilities
 }
 
-Matrix initialize_investor_utility(Matrix const& ui_init, Matrix_vector const& choice_likelihood)
+Matrix initialize_investor_utility(Matrix const& ui_init, Matrix_vector const& choice_likelihood) //expected utility, given trustee response likelihoods
 {
-	Matrix ui = Zero_matrix(noa, nob);
-	for(Matrix_vector::size_type b = 0; b < choice_likelihood.size(); ++b)
+	Matrix ui = Zero_matrix(noa, nob); //expected utility for investor 
+	for(Matrix_vector::size_type b = 0; b < choice_likelihood.size(); ++b) //possible trustee types
 	{
-		for(Matrix::size_type money_invested = 0; money_invested < choice_likelihood[b].size1(); ++money_invested)
+		for(Matrix::size_type money_invested = 0; money_invested < choice_likelihood[b].size1(); ++money_invested) //possible investments
 		{
-			double max = 0.0;
-			Matrix::size_type max_index = 0;
-			for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
+			for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned) //possible responses
 			{
-				ui(money_invested,b) += ui_init(money_invested,money_returned)*choice_likelihood[b](money_invested,money_returned); //expected values
+				ui(money_invested,b) += ui_init(money_invested,money_returned)*choice_likelihood[b](money_invested,money_returned); //sum over utilitites of possible responses times their likelihood
 			}
 		}
 	}
 	
-	return ui;
+	return ui; //return expected utilities
 }
 
-Matrix_vector initialize_choice_likelihood(const Matrix_vector& utpi_init)
+Matrix_vector initialize_choice_likelihood(const Matrix_vector& utpi_init) //Calculate high likely the investor thinks a trustee response, conditional on possible trustee types
 {	
 	Matrix_vector choice_likelihood(nob, Zero_matrix(noa, 5)); //describes the likelihood of the trustee to choose a certain response (how much money he returns) as perceived by the investor conditional on belief
-	for(Matrix_vector::size_type b = 0; b < choice_likelihood.size(); ++b)
+	for(Matrix_vector::size_type b = 0; b < choice_likelihood.size(); ++b) //loop over possible trustee (guilt) types
 	{
-		for(Matrix::size_type money_invested = 0; money_invested < choice_likelihood[b].size1(); ++money_invested)
+		for(Matrix::size_type money_invested = 0; money_invested < choice_likelihood[b].size1(); ++money_invested) // possible investments
 		{
-			double sum = 0.0;
-			for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
+			double sum = 0.0; //exponential utility sum holder
+			for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned) //possible returns
 			{
-				sum += exp(1.0/temperature*utpi_init[b](money_invested, money_returned));
+				sum += exp(1.0/temperature*utpi_init[b](money_invested, money_returned)); //exponential utility for the trustee to return a given value. Summed up
 			}
 			
 			for(Matrix::size_type money_returned = 0; money_returned < nor(money_invested); ++money_returned)
 			{
-				choice_likelihood[b](money_invested, money_returned) = exp(1.0/temperature*utpi_init[b](money_invested, money_returned))/sum;
+				choice_likelihood[b](money_invested, money_returned) = exp(1.0/temperature*utpi_init[b](money_invested, money_returned))/sum; //calculate specific probability of return given an investment & trustee type 
 			}
 		}
 	}
 	
-	return choice_likelihood;
+	return choice_likelihood; //return response probabilities for level -1 like trustees
 }
 
-Index_vector initialize_max_ui_index(const Matrix& ui)
+Index_vector initialize_max_ui_index(const Matrix& ui) //calculate maximum expected utilities for epsilon greedy strategies
 {
-	Index_vector max_ui_index(nob,0);
-	for(Index_vector::size_type b = 0; b < nob; ++b)
+	Index_vector max_ui_index(nob,0); //holder for maximum utility indices
+	for(Index_vector::size_type b = 0; b < nob; ++b) //possible investor types
 	{
-		double max = 0.0;
-		Matrix::size_type max_index = 0;
-		for(Matrix::size_type money_invested = 0; money_invested < noa; ++money_invested)
+		double max = 0.0; //determine maximum expected utility
+		Matrix::size_type max_index = 0; //determine maximum expected utility action
+		for(Matrix::size_type money_invested = 0; money_invested < noa; ++money_invested) //for all possible investments
 		{
 			if(max < ui(money_invested, b))
 			{
-				max = ui(money_invested, b);
-				max_index = money_invested;
+				max = ui(money_invested, b); //find maximum expected utility
+				max_index = money_invested; //keep maximum expected utility action
 			}
 		}
-		max_ui_index[b] = max_index;
+		max_ui_index[b] = max_index; //keep preferred action for investor of guilt type b
 	}
 	
-	return max_ui_index;
+	return max_ui_index; //return prefered actions for epsilon greedy decision making
 }
 
-Matrix initialize_investor_probabilitites(const Index_vector& max_ui_index)
+Matrix initialize_investor_probabilitites(const Index_vector& max_ui_index) //build matrix of greedy probabilities
 {
-	Matrix investor_probabilities = Zero_matrix(nob, noa);
-	for(Matrix::size_type b = 0; b < investor_probabilities.size1(); ++b)
+	Matrix investor_probabilities = Zero_matrix(nob, noa); //for all possible investor guilts, build matrix of greedy action probabilities
+	for(Matrix::size_type b = 0; b < investor_probabilities.size1(); ++b) //go through all investor guilts
 	{	
-		boost::numeric::ublas::matrix_row<Matrix> row(investor_probabilities, b);
-		greedy_probabilities(row.begin(), row.end(), max_ui_index[b]);
+		boost::numeric::ublas::matrix_row<Matrix> row(investor_probabilities, b); //extract one row from the probabilities matrix
+		greedy_probabilities(row.begin(), row.end(), max_ui_index[b]); //fill in greedy probabilities through the function in global
 	}
 	
-	return investor_probabilities;
+	return investor_probabilities; //return greedy action probabilities
 }	
 
-
-std::vector<double> investor_k( int const& present_time
-					 , int const& planning_horizon
-					 , boost::array<int,3> guilt_parameter
-					 , int const& k1
-					 , int const& simulations
-					 , boost::array<boost::array<double, nob>, 3> const& belief_parameters
-					 , boost::array<int, global_time_horizon> const& pastactions 
-					 , boost::array<int, global_time_horizon> const& responses
-					 , boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> const& path_numbers
-					 , std::vector<double> const& array_pay
-					 , boost::array<Matrix, nob> const& ui_init_system
-					 , boost::array<Matrix, nob> const& ut_init_system
-					 , boost::array<Matrix, nob> const& investor_probabilities_system
-					 , boost::array<Matrix, nob> const& trustee_rollout_likelihood_system
-					 , Matrix_vector const& investor_choice_likelihood
-					 , Matrix const& trustee_choice_likelihood
-					 , int factor);
+//----------------------------------- End Utility Block -------------------------------------------------------------------
 
 
+//----------------------------------- Agent Block -------------------------------------------------------------------------
 
-std::vector<double> trustee_k(  int const& money_invested
-					, int const& present_time
-					, int const& planning_horizon
-					, boost::array<int,3> guilt_parameter
-					, int const& k2
-					, int const& simulations
-					, boost::array<boost::array<double, nob>, 3> const& belief_parameters
-					, boost::array<int, global_time_horizon> const& pastactions 
-					, boost::array<int, global_time_horizon> const& responses
-					, boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> const& path_numbers
-					, std::vector<double> const& array_pay
-					, boost::array<Matrix,nob> const& ui_init_system
-					, boost::array<Matrix, nob> const& ut_init_system
-					, boost::array<Matrix, nob> const& investor_probabilities_system
-					, boost::array<Matrix, nob> const& trustee_rollout_likelihood_system
-					, Matrix_vector const& investor_choice_likelihood
-					, Matrix const& trustee_choice_likelihood
-					, int factor)
+//Simulate Investor action preference
+std::vector<double> investor_k( int const& present_time //input at what time we are in the game 
+					 , int const& planning_horizon //input how far the investor is still going to plan
+					 , boost::array<int,3> guilt_parameter //hand over own guilt parameter
+					 , int const& k1 //hand over theory of mind level of investor (0 or 2)
+					 , int const& simulations //input number of simulations
+					 , boost::array<boost::array<double, nob>, 3> const& belief_parameters //input current beliefs about the partner and their beliefs
+					 , boost::array<int, global_time_horizon> const& pastactions //input the action history so far
+					 , boost::array<int, global_time_horizon> const& responses //input the response history so far
+					 , boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> const& path_numbers //input the number of paths up to a certain time, for precalculation read out
+					 , std::vector<double> const& array_pay //hand over precalculated investor level 0 action values
+					 , boost::array<Matrix, nob> const& ui_init_system //hand over investor utilities for all guilts
+					 , boost::array<Matrix, nob> const& ut_init_system //input trustee utilitites for all guilts
+					 , boost::array<Matrix, nob> const& investor_probabilities_system //hand over greedy investor probabilities
+					 , boost::array<Matrix, nob> const& trustee_rollout_likelihood_system //hand over trustee greedy probabilies
+					 , Matrix_vector const& investor_choice_likelihood //hand over level 0 investor beliefs on trustee response, conditional on a given guilt
+					 , Matrix const& trustee_choice_likelihood //hand over level 0 trustee beliefs on next investir action given guilt
+					 , int factor); //multiply the path numbers
+
+
+//Simulate Trustee action preference
+std::vector<double> trustee_k(  int const& money_invested //input last investor action
+					, int const& present_time //input at what time we are in the game 
+					, int const& planning_horizon//input how far the trustee is still going to plan
+					, boost::array<int,3> guilt_parameter//hand over own guilt parameter
+					, int const& k2//hand over theory of mind level of trustee (0 or 1)
+					, int const& simulations //input number of simulations
+					, boost::array<boost::array<double, nob>, 3> const& belief_parameters //input current beliefs about the partner and their beliefs
+					, boost::array<int, global_time_horizon> const& pastactions //input the action history so far
+					, boost::array<int, global_time_horizon> const& responses //input the response history so far
+					, boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> const& path_numbers //input the number of paths up to a certain time, for precalculation read out
+					, std::vector<double> const& array_pay//hand over precalculated investor level 0 action values
+					, boost::array<Matrix,nob> const& ui_init_system //hand over investor utilities for all guilts
+					, boost::array<Matrix, nob> const& ut_init_system //input trustee utilitites for all guilts
+					, boost::array<Matrix, nob> const& investor_probabilities_system //hand over greedy investor probabilities
+					, boost::array<Matrix, nob> const& trustee_rollout_likelihood_system//hand over trustee greedy probabilies
+					, Matrix_vector const& investor_choice_likelihood//hand over level 0 investor beliefs on trustee response, conditional on a given guilt
+					, Matrix const& trustee_choice_likelihood  //hand over level 0 trustee beliefs on next investir action given guilt
+					, int factor)//multiply the path numbers
 {
-	
-	MEMORY_POOL<True_node> mempool;
-	True_node* root = new True_node(); 	
-	boost::array<int,global_time_horizon> sorted_hist;
-	boost::array<int, global_time_horizon> action;
-	boost::array<int, global_time_horizon> response;
-	std::vector<double> trustee_payoff (noa,0.0);
-	int trustee_guilt = guilt_parameter[k2];	
+
+	MEMORY_POOL<True_node> mempool; //prestructure memory blocks
+	True_node* root = new True_node(); 	//create root node object
+	boost::array<int,global_time_horizon> sorted_hist; //initialize sorted hist
+	boost::array<int, global_time_horizon> action; //initialize simulation action history
+	boost::array<int, global_time_horizon> response; //initialize simualtion response history
+	std::vector<double> trustee_payoff (noa,0.0); //initialize output structure to hold trustee action preferences
+	int trustee_guilt = guilt_parameter[k2];	//extract the proper guilt parameter for the trustee (k2 = 0 or 1)
 	for(int t=0; t < global_time_horizon; ++t)
 	{
-		action[t] = pastactions[t];
+		action[t] = pastactions[t]; //fill in known past actions, for level 0 investor read out
 	}
 
 
 	
 	for(int t=0; t < global_time_horizon; ++t)
 	{
-		response[t] = responses[t];
+		response[t] = responses[t]; //fill in known past responses, for level 0 investor read out
 	}
-	if( (k2==0) )
+	if( (k2==0) ) //if the trustee is level 0
 	{	
 		for(int resp=0; resp < nor(money_invested); ++resp)
 		{
-			trustee_payoff[resp]=investor_choice_likelihood[trustee_guilt](money_invested, resp);
+			trustee_payoff[resp]=investor_choice_likelihood[trustee_guilt](money_invested, resp); //the level 0 trustee acts on immediate utilities only, so the response likelihood is accurate
 		}
-		delete root;
+		delete root; //remove tree from memory
 	}
 	else
 	{
 
-		True_node* origin = new True_node();
-		True_node* current_node;
-		True_node* Trustee_node_r;
-		origin->set_child(money_invested, root);
-		boost::array<int, global_time_horizon> sorted_hist;
+		True_node* origin = new True_node(); //create node from which to follow investor action
+		True_node* current_node; //track current investor node in the simulation
+		True_node* Trustee_node_r; //track current trustee node in the simulation
+		origin->set_child(money_invested, root); //root is the follow up node to origin, after following the last investor action
+		boost::array<int, global_time_horizon> sorted_hist; //initialize sorted hist
 		
-		boost::array<boost::array<double,nob>,3> initial_beliefs;	
-		boost::array<boost::array<double,nob>,3> beliefs;	
+		boost::array<boost::array<double,nob>,3> initial_beliefs;	//initialize the beliefs at the root
+		boost::array<boost::array<double,nob>,3> beliefs;	//initialize "running beliefs" during simulation
 
-		for(unsigned int level=0; level < 3; ++level)  //level 2 uses everything
+		for(unsigned int level=0; level < 3; ++level)  //fill in possible ToM levels
 		{
-			for(unsigned int belief=0; belief < nob; ++belief)
+			for(unsigned int belief=0; belief < nob; ++belief) //go through possible beliefs
 			{
-				initial_beliefs[level][belief] = belief_parameters[level][belief];
+				initial_beliefs[level][belief] = belief_parameters[level][belief]; //beliefs represent the Dirichlet prior parameters at the present stage in the simulation
 			}
 		}
 		
-		std::vector<double> pay (noa,0.0);				
-		boost::array<boost::array<double,noa>,nob> exp_payoffs;
+		std::vector<double> pay (noa,0.0); //create a holder for payoffs of lower level simulations
+		boost::array<boost::array<double,noa>,nob> exp_payoffs; //create a holder for investor action likelihoods, given nob possible investor guilts 
 				
 		
-		boost::array<True_node*,global_time_horizon> path;
-		boost::array<double,global_time_horizon> value;
-		boost::array<unsigned int, global_time_horizon> action_count;
+		boost::array<True_node*,global_time_horizon> path; //track the visited nodes
+		boost::array<double,global_time_horizon> value; //evaluate the utility of the observed exchanges in the simulation
+		boost::array<unsigned int, global_time_horizon> action_count; //keep track how often an action was taken
 
 
 		
-		int last_action;
-		int last_response;
-		int act;
-		int game;
-		long long unsigned int summe;
-		int max ;
-		int old_max;
-		long long unsigned int num_act;
-		long long unsigned int counter;	
-		int unvisited_action;
-		int et;		
-		boost::array<double,nob> belief_probability;
-		double sum =0.0;
+		int last_action; //greedy rollout variable, when concrete action need no longer be tracked
+		int last_response;//greedy rollout variable, when concrete response need no longer be tracked
+		int game; //running variable, keeping track of our current position in the game
+		long long unsigned int summe; //level 0 readout quantity, transforming the observed history into a vector element
+		int max ; //storage for running maximum
+		int old_max; //storage for a comparative maximum
+		long long unsigned int num_act; //level 0 readout quantity, transforming the observed history into a vector element
+		long long unsigned int counter;	//level 0 readout quantity, transforming the observed history into a vector element
+		int unvisited_action; //indicates if there is still an unexplored action at the current node
+		int et;		//holder for the value of "nor"
+		boost::array<double,nob> belief_probability; //Dirichlet multinomial probability, marginalized from Dirichlet prior values
+		double sum =0.0; //holder for summations
 		for(int o = 0; o < nob; ++o)
 		{
-			sum += initial_beliefs[2-k2][o];
+			sum += initial_beliefs[2-k2][o]; //sum up Dirichlet prior parameter values
 		}
 		for(int o = 0; o < nob; ++o)
 		{
-			belief_probability[o] = initial_beliefs[2-k2][o]/sum;
+			belief_probability[o] = initial_beliefs[2-k2][o]/sum; //normalize Dirichlet prior parameter values, to obtain Dirichlet multinomial guilt probabilities
+																// 2-k2 selects the currect sub array that holds the beliefs about the actual partner guilt
 		}
-		int trustee_guilt_belief = softmax(belief_probability,17);
+		int trustee_guilt_belief = softmax(belief_probability,17); //softmax on guilt probabilities, samples a partner guilt value (intentional model) for use during simulation
 			
-		path[present_time] = root;
-		action[present_time] = money_invested;
-		response[present_time]= softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], money_invested),2);
-		value[present_time] = ut_init_system[trustee_guilt](action[present_time], response[present_time]);
-		root->inc_action_count(response[present_time]);
+		path[present_time] = root; //we start at the root at the present time
+		action[present_time] = money_invested; //the investor just invested money_invested
+		response[present_time]= softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], money_invested),2); //our response is rollout like, using epsilon-greedy probabilities 
+		value[present_time] = ut_init_system[trustee_guilt](action[present_time], response[present_time]); //we evaluate the exchange
+		root->inc_action_count(response[present_time]); //one possible response has been taken once from the root now
 
 					
-		for(int i = present_time+1; i < planning_horizon; ++i)
+		for(int i = present_time+1; i < planning_horizon; ++i) //rollout value estimate
 		{
-			last_action = softmax(Matrix_column(trustee_choice_likelihood, trustee_guilt_belief),3);
-			last_response = softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], last_action),4);
-			value[present_time] += ut_init_system[trustee_guilt](last_action, last_response);
+			last_action = softmax(Matrix_column(trustee_choice_likelihood, trustee_guilt_belief),3); //investor acts epsilon greedy
+			last_response = softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], last_action),4); //trustee reacts epsilon greedy
+			value[present_time] += ut_init_system[trustee_guilt](last_action, last_response); //simualted values are summed up
 		}
 					
-		root->rollout_done();
+		root->rollout_done(); //the root node has been rollout out and can now be explored "in tree"
 
-		sum = 0.0;
-		for( int i = present_time; i >= present_time; --i)
+		sum = 0.0; //reset sum
+		for( int i = present_time; i >= present_time; --i) //make a value back update
 		{
-			sum += value[i];
-			path[i]->set_payoff(response[i], path[i]->get_payoff(response[i]) + (sum - path[i]->get_payoff(response[i]) ) / (path[i]->get_action_count(response[i])));
+			sum += value[i]; //sum up observed values from first to last
+			path[i]->set_payoff(response[i], path[i]->get_payoff(response[i]) + (sum - path[i]->get_payoff(response[i]) ) / (path[i]->get_action_count(response[i]))); //update traversed path by values observed from each node
 		}
 
-		int local_simulations = simulations;
+		int local_simulations = simulations; //holder for a possible distinction between local_simulations and simulations
 		
 		for(int re=0; re < noa; ++re)	//do normal tree calculation except response is fixed (if available) at 1 of the 5 possible values
 		{
 
-			for(int j=0; j < 5*(planning_horizon-present_time+1); ++j) 
+			for(int j=0; j < 5*(planning_horizon-present_time+1); ++j) //don't over explore, just make sure to reach the planning horizon once 
 			{
 			
 				for(int level=0; level < 3; ++level)
 				{
 					for(int belief=0; belief < nob; ++belief)
 					{
-						beliefs[level][belief] = initial_beliefs[level][belief];
+						beliefs[level][belief] = initial_beliefs[level][belief]; //reset beliefs to initial
 					}
 				}
 
-				trustee_guilt_belief = softmax(belief_probability,6);		
+				trustee_guilt_belief = softmax(belief_probability,6);		//sample partner intentional model/guilt
 			
-				current_node = origin;
-				game = present_time;
-				num_act=0;
-				summe=0;
-				max =0;
-				old_max=0;
+				current_node = origin;//return investor to origin
+				game = present_time; //return simulated game time to present time
+				num_act=0;//reset level 0 running index
+				summe=0;//reset level 0 running index
+				max =0;//reset level 0 running index
+				old_max=0;//reset level 0 running index
 				
-				Trustee_node_r = root;
+				Trustee_node_r = root;//return trustee to root
 				
-				for(; game < planning_horizon; ++game)
+				for(; game < planning_horizon; ++game) //increment simulated game time till planning horizon
 				{
 	
-					if(!current_node)
+					if(!current_node) //if the investor node has not been defined yet
 					{	
-						current_node = new True_node(); 
-						Trustee_node_r-> set_child(response[game-1], current_node);					
-						if(k2==1)
+						current_node = new True_node(); //create a new investor node
+						Trustee_node_r-> set_child(response[game-1], current_node);	//tie the investor node to the last trustee node 				
+						if(k2==1) //if the trustee is level 1, it simulates the investor as level 0
 						{
+							//make sure all level 0 read out variables are reset
 							summe=0;
 							max =0;
 							old_max=0;
 							num_act=0;
 							counter=0;
 
-							if(game>0)
+							if(game>0) //unless we are in the very initial round
 							{
-								for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum)
+								for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum) //transform the action and response histories to ActionResponsePairs
 								{
 									sorted_hist[hist_sum]=(action[hist_sum]==0 ? 0:((action[hist_sum]-1)*noa + 1 +response[hist_sum]));
 								}				
-								sorted_hist =custom_sort(sorted_hist, game-1);	
+								sorted_hist =custom_sort(sorted_hist, game-1);	//sort the action-response histories smallest to largest
 								for(int hist_sum= 0; hist_sum <(game); ++hist_sum)
 								{
-									if(!(sorted_hist[hist_sum]==0))
+									if(!(sorted_hist[hist_sum]==0)) //if the action pair was not 0-0, then there is a number of possible paths associated to this history at the given position
 									{
-										max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max);
-										if(sorted_hist[hist_sum] < old_max)
+										max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max); //check if the current entry is bigger than the last
+										if(sorted_hist[hist_sum] < old_max) //double check if sort worked
 										{
 											cout << "ERROR: sort didn't work" << endl;
 										}										
-										if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1))
+										if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1)) //if we are not at the last step and the maximum has increased
 										{
 											for(int up=old_max; up < sorted_hist[hist_sum]; ++up)
 											{
-												summe += path_numbers[up][(game)-hist_sum-1];
+												summe += path_numbers[up][(game)-hist_sum-1]; //add a few extra paths, due to the maximum having increased
 											}
 										}
-										if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1))
+										if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1)) //if we are at the last step, but the maximum has increased once more
 										{
-											summe += sorted_hist[hist_sum]-old_max;
+											summe += sorted_hist[hist_sum]-old_max; //add another number of extra paths, due to the maximum having increased at the last step
 										}
-										old_max = max;									
+										old_max = max;	//set old_max to max for checking purposes
 									}
-								counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //Need a min here								
+								counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //add the full number of ordered paths between the 2 histories							
 								}
-								num_act = counter+(summe)*noa*nob*(global_time_horizon-(game));
+								num_act = counter+(summe)*noa*nob*(global_time_horizon-(game)); //sum up read out variables to find the correct entry in the level 0 precalculated structure
 							}			
 							
 							for(int belief=0; belief < nob ; ++belief)
@@ -1074,60 +1084,29 @@ std::vector<double> trustee_k(  int const& money_invested
 								for(int possible_action =0; possible_action < noa; ++possible_action)
 								{
 									current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief);
+									//set action values for possible investor guilt "belief" and all possible actions, after reading out the exact position in the level 0 precalculated vector
 								}
 							}	
 						}
 					
-						if(k2==2)
-						{
-							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
-							{
-								guilt_parameter[1]=guilt_belief;
-								pay = investor_k(game, planning_horizon , guilt_parameter, 1, factor*simulation_iterations/10*(planning_horizon-game), beliefs, action, response,
-								path_numbers, array_pay, ui_init_system, ut_init_system, investor_probabilities_system, trustee_rollout_likelihood_system, investor_choice_likelihood, trustee_choice_likelihood, factor);					
-								for(int i=0; i <noa ; ++i)
-								{
-									trustee_payoff[i]=pay[i];
-								}						
-								for(int possible_action =0; possible_action < noa; ++possible_action)
-								{
-									current_node->set_exp_payoffs(possible_action,trustee_payoff[possible_action],guilt_belief);
-								}							
-							}					
-						}	
 					}
-					action[game]=money_invested;
-			
-					if(k2==0 && game > present_time)
+					action[game]=money_invested; //default: investor action is money invested
+				
+					if(k2==1 && game >present_time) //if we are not at the initial offer anymore
 					{
-						action[game]= softmax(Matrix_column(trustee_choice_likelihood, trustee_guilt_belief),7);
-					}
-						
-						
-					if(k2>0 && game >present_time)
-					{
-						exp_payoffs =current_node->get_exp_payoffs();
-						action[game] =  softmax(exp_payoffs[trustee_guilt_belief],8);
+						exp_payoffs =current_node->get_exp_payoffs(); //get action values stored in investor node
+						action[game] =  softmax(exp_payoffs[trustee_guilt_belief],8); //let investor choose action, based on current sampled investor guilt and position in the tree (current node)
 					}			
 
-					if(k2==2 && game > present_time) 
+					current_node->inc_action_count(action[game]); //increment investor simulation action count
+					Trustee_node_r = current_node->get_child(action[game]); //set trustee to the the proper child node of the observed investor action
+					if(!Trustee_node_r) //if the trustee node has not been constructed yet
 					{
-						for(int belief=0; belief<nob; ++belief)
-						{				
-							beliefs[2][belief] += trustee_choice_likelihood(action[game],belief);
-						}
-					}
-
-					current_node->inc_action_count(action[game]);
-					Trustee_node_r = current_node->get_child(action[game]);
-					if(!Trustee_node_r)
-					{
-
-						Trustee_node_r = new True_node(); 		
-						path[game]=Trustee_node_r;
-						current_node->set_child(action[game], Trustee_node_r);
-			
-
+						Trustee_node_r = new True_node(); 	//create new trustee node object
+						path[game]=Trustee_node_r; //set path to the new object
+						current_node->set_child(action[game], Trustee_node_r); //connect to the last investor node, at the proper action
+		
+						//do an epsilon greedy rollout
 						response[game]= softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], action[game]),14);
 						value[game] = ut_init_system[trustee_guilt](action[game], response[game]);
 						for(int i = game + 1; i < planning_horizon; ++i)
@@ -1137,62 +1116,53 @@ std::vector<double> trustee_k(  int const& money_invested
 							value[game] += ut_init_system[trustee_guilt](last_action, last_response);
 						}
 							
-						Trustee_node_r->inc_action_count(response[game]);					
-						++game;
-						break;		
+						Trustee_node_r->inc_action_count(response[game]);		
+						++game;//increment game count, due to value update calculation conventions
+						break;	//break current simulation and jump to value update below
 
 					}
-					else
+					else //in tree action selection
 					{
-						if(action[game]==0)
+						if(action[game]==0) //if the investor gave nothing
 						{
-							response[game]=0;
+							response[game]=0; //the trustee can do nothing
 						}
 						else
 						{
 
-							unvisited_action = Trustee_node_r->get_next_free_child();
+							unvisited_action = Trustee_node_r->get_next_free_child(); //test if there is still an unexplored response
 
 							
-							if(unvisited_action == noa)
+							if(unvisited_action == noa) //all responses have been explored
 							{
-								response[game] = re;
+								response[game] = re; //use the static presearch fixed response
 							}
 							else
 							{
-								response[game] = unvisited_action;
+								response[game] = unvisited_action; //explore the next unexplored action
 							}	
 
-						
-
 						}
-						if(k2==1 && !(action[game]==0)) 
+						if(k2==1 && !(action[game]==0)) //keep track of investor beliefs, altough strictly not necessary given the precalculated action values
 						{
 							for( int belief=0; belief<nob; ++belief)
 							{				
-								beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]);
+								beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]); //have level 0 investor update their beliefs, based on their level -1 model of the trustee
 							}
-						}							
-						if(k2==2  && !(action[game]==0))
-						{
-							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
-							{
-								beliefs[1][guilt_belief]+=investor_choice_likelihood[guilt_belief](action[game], response[game]);
-							}
-						}						
-						Trustee_node_r->inc_action_count(response[game]);
-						value[game] = ut_init_system[trustee_guilt](action[game], response[game]);
-						current_node = Trustee_node_r->get_child(response[game]);			
+						}											
+						Trustee_node_r->inc_action_count(response[game]);//increment taken action
+						value[game] = ut_init_system[trustee_guilt](action[game], response[game]); //evaluate exchange
+						current_node = Trustee_node_r->get_child(response[game]);	//move investor to the next node, given trustee action
 						
 					}
-					path[game]=Trustee_node_r;
+					path[game]=Trustee_node_r; //keep track of the taken path
 				}
 				
-				sum = 0.0;
+				sum = 0.0; //reset sum
 				for( int i = game-1; i >= present_time; --i)
 				{
-					sum += value[i];
-					path[i]->set_payoff(response[i], path[i]->get_payoff(response[i]) + (sum - path[i]->get_payoff(response[i]) ) / (path[i]->get_action_count(response[i])));
+					sum += value[i]; //sum up last to first value
+					path[i]->set_payoff(response[i], path[i]->get_payoff(response[i]) + (sum - path[i]->get_payoff(response[i]) ) / (path[i]->get_action_count(response[i]))); //update values from node to time horizon
 				}
 			}
 		}
@@ -1204,244 +1174,214 @@ std::vector<double> trustee_k(  int const& money_invested
 			{
 				for(int belief=0; belief < nob; ++belief)
 				{
-					beliefs[level][belief] = initial_beliefs[level][belief];
+					beliefs[level][belief] = initial_beliefs[level][belief]; //reset beliefs to initial
 				}
 			}
 
-			trustee_guilt_belief = softmax(belief_probability,10);		
+			trustee_guilt_belief = softmax(belief_probability,6);		//sample partner intentional model/guilt
 		
-			current_node = origin;
-			Trustee_node_r = root;
-				
-			game = present_time;
-
-			for(; game < planning_horizon; ++game)
+			current_node = origin;//return investor to origin
+			game = present_time; //return simulated game time to present time
+			num_act=0;//reset level 0 running index
+			summe=0;//reset level 0 running index
+			max =0;//reset level 0 running index
+			old_max=0;//reset level 0 running index
+			
+			Trustee_node_r = root;//return trustee to root
+			
+			for(; game < planning_horizon; ++game) //increment simulated game time till planning horizon
 			{
-	
-				if(!current_node)
-				{
-					current_node = new True_node(); 
-					Trustee_node_r-> set_child(response[game-1], current_node);			
-					if(k2==1)
+
+				if(!current_node) //if the investor node has not been defined yet
+				{	
+					current_node = new True_node(); //create a new investor node
+					Trustee_node_r-> set_child(response[game-1], current_node);	//tie the investor node to the last trustee node 				
+					if(k2==1) //if the trustee is level 1, it simulates the investor as level 0
 					{
+						//make sure all level 0 read out variables are reset
 						summe=0;
 						max =0;
 						old_max=0;
 						num_act=0;
 						counter=0;
 
-						if(game>0)
+						if(game>0) //unless we are in the very initial round
 						{
-							for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum)
+							for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum) //transform the action and response histories to ActionResponsePairs
 							{
 								sorted_hist[hist_sum]=(action[hist_sum]==0 ? 0:((action[hist_sum]-1)*noa + 1 +response[hist_sum]));
 							}				
-							sorted_hist =custom_sort(sorted_hist, game-1);	
+							sorted_hist =custom_sort(sorted_hist, game-1);	//sort the action-response histories smallest to largest
 							for(int hist_sum= 0; hist_sum <(game); ++hist_sum)
 							{
-								if(!(sorted_hist[hist_sum]==0))
+								if(!(sorted_hist[hist_sum]==0)) //if the action pair was not 0-0, then there is a number of possible paths associated to this history at the given position
 								{
-									max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max);
-									if(sorted_hist[hist_sum] < old_max)
+									max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max); //check if the current entry is bigger than the last
+									if(sorted_hist[hist_sum] < old_max) //double check if sort worked
 									{
 										cout << "ERROR: sort didn't work" << endl;
 									}										
-									if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1))
+									if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1)) //if we are not at the last step and the maximum has increased
 									{
 										for(int up=old_max; up < sorted_hist[hist_sum]; ++up)
 										{
-											summe += path_numbers[up][(game)-hist_sum-1];
+											summe += path_numbers[up][(game)-hist_sum-1]; //add a few extra paths, due to the maximum having increased
 										}
 									}
-									if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1))
+									if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1)) //if we are at the last step, but the maximum has increased once more
 									{
-										summe += sorted_hist[hist_sum]-old_max;
+										summe += sorted_hist[hist_sum]-old_max; //add another number of extra paths, due to the maximum having increased at the last step
 									}
-									old_max = max;									
+									old_max = max;	//set old_max to max for checking purposes
 								}
-								counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //Need a min here								
+							counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //add the full number of ordered paths between the 2 histories							
 							}
-							num_act = counter+(summe)*noa*nob*(global_time_horizon-(game));
-						}		
+							num_act = counter+(summe)*noa*nob*(global_time_horizon-(game)); //sum up read out variables to find the correct entry in the level 0 precalculated structure
+						}			
 						
 						for(int belief=0; belief < nob ; ++belief)
 						{
 							for(int possible_action =0; possible_action < noa; ++possible_action)
 							{
-								current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief); //planning horizon can remain
+								current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief);
+								//set action values for possible investor guilt "belief" and all possible actions, after reading out the exact position in the level 0 precalculated vector
 							}
 						}	
 					}
-					
-					if(k2==2)
-					{
-						for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
-						{
-							guilt_parameter[1]=guilt_belief;
-							pay = investor_k(game, planning_horizon , guilt_parameter, 1, factor*simulation_iterations/10*(planning_horizon-game), beliefs, action, response,
-							path_numbers, array_pay, ui_init_system, ut_init_system, investor_probabilities_system, trustee_rollout_likelihood_system, investor_choice_likelihood, trustee_choice_likelihood, factor);					
-							for(int i=0; i <noa ; ++i)
-							{
-								trustee_payoff[i]=pay[i];
-							}						
-							for(int possible_action =0; possible_action < noa; ++possible_action)
-							{
-								current_node->set_exp_payoffs(possible_action,trustee_payoff[possible_action],guilt_belief);
-							}							
-						}					
-					}	
-				}			
 				
-				action[game]=money_invested;
-		
-				if(k2==0 && game > present_time)
-				{
-					action[game]=  softmax(Matrix_column(trustee_choice_likelihood, trustee_guilt_belief),11);
 				}
-					
-					
-				if(k2>0 && game >present_time)
-				{
-					exp_payoffs =current_node->get_exp_payoffs();
-					action[game] =  softmax(exp_payoffs[trustee_guilt_belief],12);
-				}						
-				if(k2==2 && game > present_time) 
-				{
-					for(int belief=0; belief<nob; ++belief)
-					{				
-						beliefs[2][belief] += trustee_choice_likelihood(action[game],belief);
-					}
-				}										
-
-				current_node->inc_action_count(action[game]);
-				Trustee_node_r = current_node->get_child(action[game]);
-				if(!Trustee_node_r)
-				{
-
-					et = nor(action[game]);
-					Trustee_node_r = new True_node(); 			
-					path[game]=Trustee_node_r;
-					current_node->set_child(action[game], Trustee_node_r);
+				action[game]=money_invested; //default: investor action is money invested
 			
+				if(k2==1 && game >present_time) //if we are not at the initial offer anymore
+				{
+					exp_payoffs =current_node->get_exp_payoffs(); //get action values stored in investor node
+					action[game] =  softmax(exp_payoffs[trustee_guilt_belief],8); //let investor choose action, based on current sampled investor guilt and position in the tree (current node)
+				}			
 
-					response[game]=softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], action[game]),14);
-					value[game] = ut_init_system[trustee_guilt](action[game], response[game]);	
+				current_node->inc_action_count(action[game]); //increment investor simulation action count
+				Trustee_node_r = current_node->get_child(action[game]); //set trustee to the the proper child node of the observed investor action
+				if(!Trustee_node_r) //if the trustee node has not been constructed yet
+				{
+					Trustee_node_r = new True_node(); 	//create new trustee node object
+					path[game]=Trustee_node_r; //set path to the new object
+					current_node->set_child(action[game], Trustee_node_r); //connect to the last investor node, at the proper action
+	
+					//do an epsilon greedy rollout
+					response[game]= softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], action[game]),14);
+					value[game] = ut_init_system[trustee_guilt](action[game], response[game]);
 					for(int i = game + 1; i < planning_horizon; ++i)
 					{
-						last_action = softmax(Matrix_column(trustee_choice_likelihood, trustee_guilt_belief),15);
+						last_action = softmax(Matrix_column(trustee_choice_likelihood, trustee_guilt_belief),9);
 						last_response = softmax(Matrix_row(trustee_rollout_likelihood_system[trustee_guilt], last_action),16);
 						value[game] += ut_init_system[trustee_guilt](last_action, last_response);
 					}
 						
-					Trustee_node_r->inc_action_count(response[game]);
-					Trustee_node_r->rollout_done();
-					++game;
-					break;		
+					Trustee_node_r->inc_action_count(response[game]);		
+					++game;//increment game count, due to value update calculation conventions
+					break;	//break current simulation and jump to value update below
 
 				}
-				else
+				else //in tree action selection
 				{
-					if(action[game]==0)
+					if(action[game]==0) //if the investor gave nothing
 					{
-						response[game]=0;
+						response[game]=0; //the trustee can do nothing
 					}
 					else
 					{
-						unvisited_action = Trustee_node_r->get_next_free_child();
+
+						unvisited_action = Trustee_node_r->get_next_free_child(); //test if there is still an unexplored response
+
 						
-						if(unvisited_action == noa)
+						if(unvisited_action == noa) //all responses have been explored
 						{
 							response[game] = Trustee_node_r->get_next_exploration( game == present_time ? (iteration+5*(planning_horizon-present_time+1)+1) : (current_node->get_action_count(action[game])) );
-						}
-						else
-						{
-							response[game] = unvisited_action;
-						}						
+							//Choose action through soft UCT. Visit counts can be derived by taking the number of times the investor chose the last action that lead to the node. 
+							//at the root instead we take the total number of simulations so far, as every simulation passes through the root
+							}
+							else
+							{
+								response[game] = unvisited_action; //explore the next unexplored action
+							}	
 
-					}
-					if(k2==1  && !(action[game]==0)) 
-					{
-						for(int belief=0; belief<nob; ++belief)
-						{				
-							beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]);
 						}
-					}							
-					if(k2==2   && !(action[game]==0))
-					{
-						for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
+						if(k2==1 && !(action[game]==0)) //keep track of investor beliefs, altough strictly not necessary given the precalculated action values
 						{
-							beliefs[1][guilt_belief]+=investor_choice_likelihood[guilt_belief](action[game], response[game]);
-						}
-					}								
-					Trustee_node_r->inc_action_count(response[game]);
-					value[game] = ut_init_system[trustee_guilt](action[game], response[game]);
-					current_node = Trustee_node_r->get_child(response[game]);			
+							for( int belief=0; belief<nob; ++belief)
+							{				
+								beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]); //have level 0 investor update their beliefs, based on their level -1 model of the trustee
+							}
+						}											
+						Trustee_node_r->inc_action_count(response[game]);//increment taken action
+						value[game] = ut_init_system[trustee_guilt](action[game], response[game]); //evaluate exchange
+						current_node = Trustee_node_r->get_child(response[game]);	//move investor to the next node, given trustee action
 						
+					}
+					path[game]=Trustee_node_r; //keep track of the taken path
 				}
-				path[game]=Trustee_node_r;
-						
+				
+				sum = 0.0; //reset sum
+				for( int i = game-1; i >= present_time; --i)
+				{
+					sum += value[i]; //sum up last to first value
+					path[i]->set_payoff(response[i], path[i]->get_payoff(response[i]) + (sum - path[i]->get_payoff(response[i]) ) / (path[i]->get_action_count(response[i]))); //update values from node to time horizon
+				}
 			}
-					
-			sum = 0.0;
-			for( int i = game-1; i >= present_time; --i)
-			{
-				sum += value[i];
-				path[i]->set_payoff(response[i], path[i]->get_payoff(response[i]) + (sum - path[i]->get_payoff(response[i]) ) / (path[i]->get_action_count(response[i])));
-			}
-		}
-		sum =0.0;
+		
+		
+		sum =0.0; //reset sum
 		for(int i =0; i<nor(money_invested); ++i)
 		{
-			trustee_payoff[i] = exp(1.0/temperature*(root-> get_payoff(i)));
-			sum += trustee_payoff[i];
+			trustee_payoff[i] = exp(1.0/temperature*(root-> get_payoff(i))); //take root payoffs = simulated Q values
+			sum += trustee_payoff[i]; //sum all exponential Q values
 		}
 		for(int i =0; i<nor(money_invested); ++i)
 		{
-			trustee_payoff[i] = trustee_payoff[i]/sum;
+			trustee_payoff[i] = trustee_payoff[i]/sum; //calculate response likelihood from exponential Q values
 		}	
-		delete origin;
+		delete origin; //remove origin and all nodes connected to it
 	}
-	mempool.DeleteAll();	
-	return trustee_payoff;
+	mempool.DeleteAll();	//remove the memory pool
+	return trustee_payoff; //return the response likelihoods
 }
 
-std::vector<double> investor_k( int const& present_time
-					 , int const& planning_horizon
-					 , boost::array<int,3> guilt_parameter
-					 , int const& k1
-					 , int const& simulations
-					 , boost::array<boost::array<double, nob>, 3> const& belief_parameters
-					 , boost::array<int, global_time_horizon> const& pastactions 
-					 , boost::array<int, global_time_horizon> const& responses
-					 , boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> const& path_numbers
-					 , std::vector<double> const& array_pay
-					 , boost::array<Matrix, nob> const& ui_init_system
-					 , boost::array<Matrix, nob> const& ut_init_system
-					 , boost::array<Matrix, nob> const& investor_probabilities_system
-					 , boost::array<Matrix, nob> const& trustee_rollout_likelihood_system
-					 , Matrix_vector const& investor_choice_likelihood
-					 , Matrix const& trustee_choice_likelihood
-					 , int factor)
+//Simulate Investor action preference
+std::vector<double> investor_k( int const& present_time //input at what time we are in the game 
+					 , int const& planning_horizon //input how far the investor is still going to plan
+					 , boost::array<int,3> guilt_parameter //hand over own guilt parameter
+					 , int const& k1 //hand over theory of mind level of investor (0 or 2)
+					 , int const& simulations //input number of simulations
+					 , boost::array<boost::array<double, nob>, 3> const& belief_parameters //input current beliefs about the partner and their beliefs
+					 , boost::array<int, global_time_horizon> const& pastactions //input the action history so far
+					 , boost::array<int, global_time_horizon> const& responses //input the response history so far
+					 , boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> const& path_numbers //input the number of paths up to a certain time, for precalculation read out
+					 , std::vector<double> const& array_pay //hand over precalculated investor level 0 action values
+					 , boost::array<Matrix, nob> const& ui_init_system //hand over investor utilities for all guilts
+					 , boost::array<Matrix, nob> const& ut_init_system //input trustee utilitites for all guilts
+					 , boost::array<Matrix, nob> const& investor_probabilities_system //hand over greedy investor probabilities
+					 , boost::array<Matrix, nob> const& trustee_rollout_likelihood_system //hand over trustee greedy probabilies
+					 , Matrix_vector const& investor_choice_likelihood //hand over level 0 investor beliefs on trustee response, conditional on a given guilt
+					 , Matrix const& trustee_choice_likelihood //hand over level 0 trustee beliefs on next investir action given guilt
+					 , int factor) //multiply the path numbers
 {	
-	MEMORY_POOL<True_node> mempool;
-	True_node* root = new True_node();
-	std::vector<double> investor_payoff (noa,0.0);
-	boost::array<int, global_time_horizon> action;
-	boost::array<int, global_time_horizon> response;
-	boost::array<int, global_time_horizon> sorted_hist;		
-	int investor_guilt = guilt_parameter[k1];
-		//prepare action
-	for(int l=0; l < global_time_horizon; ++l)
+	MEMORY_POOL<True_node> mempool; //prestructure memory blocks
+	True_node* root = new True_node(); 	//create root node object
+	boost::array<int,global_time_horizon> sorted_hist; //initialize sorted hist
+	boost::array<int, global_time_horizon> action; //initialize simulation action history
+	boost::array<int, global_time_horizon> response; //initialize simualtion response history
+	std::vector<double> investor_payoff (noa,0.0); //initialize output structure to hold investor action preferences
+	int investor_guilt = guilt_parameter[k1];	//extract the proper guilt parameter for the investor (k2 = 0 or 1)
+	for(int t=0; t < global_time_horizon; ++t)
 	{
-		action[l]=pastactions[l];
+		action[t] = pastactions[t]; //fill in known past actions, for level 0 investor read out
 	}
-		//prepare response
-	for(int l=0; l < global_time_horizon; ++l)
+	for(int t=0; t < global_time_horizon; ++t)
 	{
-		response[l]=responses[l];
-	}		
-	if((k1==0) )
+		response[t] = responses[t]; //fill in known past responses, for level 0 investor read out
+	}	
+	if((k1==0) ) //if investor is level 0, action values can be read out directly
 	{
+	
 		long long unsigned int summe=0;
 		int max =0;
 		int old_max=0;
@@ -1449,167 +1389,168 @@ std::vector<double> investor_k( int const& present_time
 		int game = present_time;
 		long long unsigned int counter=0;
 
-		if(game>0)
+		if(game>0) //unless we are in the very initial round
 		{
-			for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum)
+			for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum) //transform the action and response histories to ActionResponsePairs
 			{
 				sorted_hist[hist_sum]=(action[hist_sum]==0 ? 0:((action[hist_sum]-1)*noa + 1 +response[hist_sum]));
 			}				
-			sorted_hist =custom_sort(sorted_hist, game-1);	
+			sorted_hist =custom_sort(sorted_hist, game-1);	//sort the action-response histories smallest to largest
 			for(int hist_sum= 0; hist_sum <(game); ++hist_sum)
 			{
-				if(!(sorted_hist[hist_sum]==0))
+				if(!(sorted_hist[hist_sum]==0)) //if the action pair was not 0-0, then there is a number of possible paths associated to this history at the given position
 				{
-					max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max);
-					if(sorted_hist[hist_sum] < old_max)
+					max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max); //check if the current entry is bigger than the last
+					if(sorted_hist[hist_sum] < old_max) //double check if sort worked
 					{
 						cout << "ERROR: sort didn't work" << endl;
 					}										
-					if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1))
+					if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1)) //if we are not at the last step and the maximum has increased
 					{
 						for(int up=old_max; up < sorted_hist[hist_sum]; ++up)
 						{
-							summe += path_numbers[up][(game)-hist_sum-1];
+							summe += path_numbers[up][(game)-hist_sum-1]; //add a few extra paths, due to the maximum having increased
 						}
 					}
-					if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1))
+					if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1)) //if we are at the last step, but the maximum has increased once more
 					{
-						summe += sorted_hist[hist_sum]-old_max;
+						summe += sorted_hist[hist_sum]-old_max; //add another number of extra paths, due to the maximum having increased at the last step
 					}
-					old_max = max;									
+					old_max = max;	//set old_max to max for checking purposes
 				}
-				counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); 							
+			counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //add the full number of ordered paths between the 2 histories							
 			}
-			num_act = counter+(summe)*noa*nob*(global_time_horizon-(game));
-		}		
+			num_act = counter+(summe)*noa*nob*(global_time_horizon-(game)); //sum up read out variables to find the correct entry in the level 0 precalculated structure
+		}			
 		
 		for(int act=0; act < noa; ++act)
 		{
-			investor_payoff[act] = array_pay[num_act + investor_guilt*noa + (planning_horizon-game-1)*noa*nob+act];
+			investor_payoff[act] = array_pay[num_act + investor_guilt*noa + (planning_horizon-game-1)*noa*nob+act]; //directly use precalculated values
 		}
 		
-		delete root;
+		delete root; //delete(unused) tree
 	}
 	else
 	{
-		std::vector<double> pay (noa,0.0);
 	
 
-		True_node* current_node;
-		True_node* Trustee_node_r;
-	
-		int max_level =2;
-		boost::array<boost::array<double,nob>,3> initial_beliefs;	
-		boost::array<boost::array<double,nob>,3> beliefs;	
+		True_node* current_node; //track current investor node in the simulation
+		True_node* Trustee_node_r; //track current trustee node in the simulation
+		boost::array<int, global_time_horizon> sorted_hist; //initialize sorted hist
+		
+		boost::array<boost::array<double,nob>,3> initial_beliefs;	//initialize the beliefs at the root
+		boost::array<boost::array<double,nob>,3> beliefs;	//initialize "running beliefs" during simulation
 
-		for(unsigned int level=0; level < 3; ++level)  //level 2 uses everything
+		for(unsigned int level=0; level < 3; ++level)  //fill in possible ToM levels
 		{
-			for(unsigned int belief=0; belief < nob; ++belief)
+			for(unsigned int belief=0; belief < nob; ++belief) //go through possible beliefs
 			{
-				initial_beliefs[level][belief] = belief_parameters[level][belief];
+				initial_beliefs[level][belief] = belief_parameters[level][belief]; //beliefs represent the Dirichlet prior parameters at the present stage in the simulation
 			}
 		}
-			
-	
-		boost::array<True_node*,global_time_horizon> path;
-		boost::array<double,global_time_horizon> value;
-		boost::array<unsigned int, global_time_horizon> action_count;
 		
-		int game;
-		int last_action;
-		int last_response;
-		int act;
-		long long unsigned int summe;
-		int max;
-		int old_max;
-		long long unsigned int num_act;
-		long long unsigned int counter;
-		int et;
-		int unvisited_action;
-		boost::array<boost::array<double,noa>,nob> exp_payoffs;		
-	
-		boost::array<double,nob> belief_probability;
-		double sum =0.0;
-		for(int o = 0; o < nob; ++o)
-		{
-			sum += initial_beliefs[2-k1][o];
-		}
-		for(int o = 0; o < nob; ++o)
-		{
-			belief_probability[o] = initial_beliefs[2-k1][o]/sum;			
-		}
-		int trustee_guilt_belief = softmax(belief_probability,17);
-		
-
-		
-		path[present_time] = root;
-		action[present_time] = softmax(row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),18);
-		value[present_time] = ui_init_system[investor_guilt](action[present_time], softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[present_time]),19));
-		root->inc_action_count(action[present_time]);
+		std::vector<double> pay (noa,0.0); //create a holder for payoffs of lower level simulations
+		boost::array<boost::array<double,noa>,nob> exp_payoffs; //create a holder for investor action likelihoods, given nob possible investor guilts 
 				
-		for(int i = present_time+1; i < planning_horizon; ++i)
+		
+		boost::array<True_node*,global_time_horizon> path; //track the visited nodes
+		boost::array<double,global_time_horizon> value; //evaluate the utility of the observed exchanges in the simulation
+		boost::array<unsigned int, global_time_horizon> action_count; //keep track how often an action was taken
+
+
+		
+		int last_action; //greedy rollout variable, when concrete action need no longer be tracked
+		int last_response;//greedy rollout variable, when concrete response need no longer be tracked
+		int game; //running variable, keeping track of our current position in the game
+		long long unsigned int summe; //level 0 readout quantity, transforming the observed history into a vector element
+		int max ; //storage for running maximum
+		int old_max; //storage for a comparative maximum
+		long long unsigned int num_act; //level 0 readout quantity, transforming the observed history into a vector element
+		long long unsigned int counter;	//level 0 readout quantity, transforming the observed history into a vector element
+		int unvisited_action; //indicates if there is still an unexplored action at the current node
+		int et;		//holder for the value of "nor"	
+
+		boost::array<double,nob> belief_probability; //Dirichlet multinomial probability, marginalized from Dirichlet prior values
+		double sum =0.0; //holder for summations
+		for(int o = 0; o < nob; ++o)
 		{
-			last_action = softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),20);
-			last_response = softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], last_action),21);
-			value[present_time] += ui_init_system[investor_guilt](last_action, last_response);
+			sum += initial_beliefs[2-k1][o]; //sum up Dirichlet prior parameter values
+		}
+		for(int o = 0; o < nob; ++o)
+		{
+			belief_probability[o] = initial_beliefs[2-k1][o]/sum; //normalize Dirichlet prior parameter values, to obtain Dirichlet multinomial guilt probabilities
+																// 2-k1 selects the currect sub array that holds the beliefs about the actual partner guilt
+		}
+		int trustee_guilt_belief = softmax(belief_probability,17); //softmax on guilt probabilities, samples a partner guilt value (intentional model) for use during simulation
+		
+		path[present_time] = root; //start at root
+		action[present_time] = softmax(row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),18); //choose optimal action given current guilt belief
+		value[present_time] = ui_init_system[investor_guilt](action[present_time], softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[present_time]),19));
+		//raw response from trustee response likelihoods and evaulate exchange
+		root->inc_action_count(action[present_time]); //increment first chosen action
+				
+		for(int i = present_time+1; i < planning_horizon; ++i) //epsilon greedy investor rollout
+		{
+			last_action = softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),20); //choose actions based on sampled trustee guilt 
+			last_response = softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], last_action),21); //choose responses based on sampled trustee guilt
+			value[present_time] += ui_init_system[investor_guilt](last_action, last_response); //evaluate exchanges
 		}
 
-		sum = 0.0;
+		sum = 0.0; //reset sum
 		for( int i = present_time; i >= present_time; --i)
 		{
-			sum += value[i];
-			path[i]->set_payoff(action[i], path[i]->get_payoff(action[i]) + (sum - path[i]->get_payoff(action[i]) ) / (path[i]->get_action_count(action[i])));
+			sum += value[i]; //sum values last to first
+			path[i]->set_payoff(action[i], path[i]->get_payoff(action[i]) + (sum - path[i]->get_payoff(action[i]) ) / (path[i]->get_action_count(action[i]))); //update each node by gains observed from this node
 		}
 
 		int local_simulations = simulations;
 		boost::array<boost::array<double, noa>, nob> inv_exp_payoffs;
 		
-		for(int ac= 0; ac < noa; ++ac)	
+		for(int ac= 0; ac < noa; ++ac)	//explore fixed investment strategies first
 		{
 
-			for(int j=0; j < 5*(planning_horizon-present_time+1); ++j) 
+			for(int j=0; j < 5*(planning_horizon-present_time+1); ++j) //don't overexplore. Just reach the planning horizon reliably
 			{
 			
 				for(int level=0; level < 3; ++level)
 				{
 					for(int belief=0; belief < nob; ++belief)
 					{
-						beliefs[level][belief] = initial_beliefs[level][belief];
+						beliefs[level][belief] = initial_beliefs[level][belief]; //fill in initial prior belief parameters
 					}
 				}
-				
-			
-				trustee_guilt_belief = softmax(belief_probability,22);		
+								
+				trustee_guilt_belief = softmax(belief_probability,22);		//sample new intentional model of the partner
 		
-				current_node = root;
+				current_node = root; //start simulation at the root always
 				
-				game = present_time;
-				for(; game < planning_horizon; ++game)
+				game = present_time; //reset simulation time to present time
+				for(; game < planning_horizon; ++game) //calculate till the planning horizon
 				{
-					if(!current_node)
+					if(!current_node) //if the current now has not been instantiated yet
 					{		
-						current_node = new True_node();
-						Trustee_node_r-> set_child(response[game-1], current_node);
-						path[game] = current_node;
-						action[game] = softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),90);
-						value[game] = ui_init_system[investor_guilt](action[game], softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[game]),23));
+						current_node = new True_node(); //create new investor node object. 
+						Trustee_node_r-> set_child(response[game-1], current_node); //tie the investor node to the trustee node visited before
+						path[game] = current_node; //set path to the current node
+						action[game] = softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),90); //choose the optimal action based on the current guilt belief
+						value[game] = ui_init_system[investor_guilt](action[game], softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[game]),23)); //evaulate exchange
 						current_node->inc_action_count(action[game]);
 						
-						for(int i = game + 1; i < planning_horizon; ++i)
+						for(int i = game + 1; i < planning_horizon; ++i) //epsilon-greedy value estimate
 						{
 							last_action =softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),95);
 							last_response = softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], last_action),24);
 							value[game] += ui_init_system[investor_guilt](last_action, last_response);
 						}					
-						++game;
-						break;
+						++game; //increment time, to properly value update below
+						break; //break current simulation after rollout, jump to value update and do next simulation
 					}
 
-					path[game] = current_node;		
+					path[game] = current_node;		// always track the current node
 					
-					if(!(current_node->is_rolled_out()))
+					if(!(current_node->is_rolled_out())) //if rollout has not happened yet
 					{
-						if(k1>1)
+						if(k1==2) //we need to include level 0 action values, for the simulation of the level 1 trustee below
 						{
 							summe=0;
 							max =0;
@@ -1617,97 +1558,90 @@ std::vector<double> investor_k( int const& present_time
 							num_act=0;
 							counter=0;
 
-							if(game>0)
+							if(game>0) //unless we are in the very initial round
 							{
-								for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum)
+								for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum) //transform the action and response histories to ActionResponsePairs
 								{
 									sorted_hist[hist_sum]=(action[hist_sum]==0 ? 0:((action[hist_sum]-1)*noa + 1 +response[hist_sum]));
 								}				
-								sorted_hist =custom_sort(sorted_hist, game-1);	
+								sorted_hist =custom_sort(sorted_hist, game-1);	//sort the action-response histories smallest to largest
 								for(int hist_sum= 0; hist_sum <(game); ++hist_sum)
 								{
-									if(!(sorted_hist[hist_sum]==0))
+									if(!(sorted_hist[hist_sum]==0)) //if the action pair was not 0-0, then there is a number of possible paths associated to this history at the given position
 									{
-										max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max);
-										if(sorted_hist[hist_sum] < old_max)
+										max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max); //check if the current entry is bigger than the last
+										if(sorted_hist[hist_sum] < old_max) //double check if sort worked
 										{
 											cout << "ERROR: sort didn't work" << endl;
 										}										
-										if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1))
+										if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1)) //if we are not at the last step and the maximum has increased
 										{
 											for(int up=old_max; up < sorted_hist[hist_sum]; ++up)
 											{
-												summe += path_numbers[up][(game)-hist_sum-1];
+												summe += path_numbers[up][(game)-hist_sum-1]; //add a few extra paths, due to the maximum having increased
 											}
 										}
-										if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1))
+										if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1)) //if we are at the last step, but the maximum has increased once more
 										{
-											summe += sorted_hist[hist_sum]-old_max;
+											summe += sorted_hist[hist_sum]-old_max; //add another number of extra paths, due to the maximum having increased at the last step
 										}
-										old_max = max;									
+										old_max = max;	//set old_max to max for checking purposes
 									}
-									counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //Need a min here								
+								counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //add the full number of ordered paths between the 2 histories							
 								}
-								num_act = counter+(summe)*noa*nob*(global_time_horizon-(game));
-							}			
+								num_act = counter+(summe)*noa*nob*(global_time_horizon-(game)); //sum up read out variables to find the correct entry in the level 0 precalculated structure
+							}										
+									
 						
 							for(int belief=0; belief < nob ; ++belief)
 							{
 								for(int possible_action =0; possible_action < noa; ++possible_action)
 								{
-									current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief);
+									current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief); //readout precalculated values
 								}
 							}	
 						}
-						current_node-> rollout_done();
+						current_node-> rollout_done(); //note node is now rolled out
 					}					
 
-					int unvisited_action = current_node->get_next_free_child();				
+					int unvisited_action = current_node->get_next_free_child();	//check if an action is still unexlored		
 					
 					if(unvisited_action == noa)
 					{
-						action[game] = ac;
+						action[game] = ac; //choose fixed action
 					}
 					else
 					{
-						action[game] = unvisited_action;
+						action[game] = unvisited_action; //choose unexplored action
 					}
 				
-					if(k1==1) 
-					{
-						for(int belief=0; belief<nob; ++belief)
-						{				
-							beliefs[2][belief] += trustee_choice_likelihood(action[game],belief);
-						}
-					}		
 
-					if(k1>1)
+					if(k1==2) //for the high level investor
 					{
-						exp_payoffs =current_node->get_exp_payoffs();
+						exp_payoffs =current_node->get_exp_payoffs(); //get the likelihoods of the level 0 investor making a particular choice
 						for(int belief=0; belief<nob; ++belief)
 						{
-							beliefs[1][belief] += exp_payoffs[belief][action[game]]; 
+							beliefs[1][belief] += exp_payoffs[belief][action[game]]; //update trustee level 1 beliefs, by adding the level 0 investor action likelihood given guilt belief, to the prior parameters
 						}
 					}
-					et = nor(action[game]);
+					et = nor(action[game]); //note possible number of responses
 		
-					current_node->inc_action_count(action[game]);
-					Trustee_node_r = current_node->get_child(action[game]);
-					if(!Trustee_node_r)
+					current_node->inc_action_count(action[game]); //increment number of times the action was explored
+					Trustee_node_r = current_node->get_child(action[game]); //move trustee node following the investor action
+					if(!Trustee_node_r) //if the trustee node has not been instantiated yet
 					{
-						Trustee_node_r = new True_node(); 
+						Trustee_node_r = new True_node(); //create new trustee node
 
-						current_node->set_child(action[game], Trustee_node_r);
-						if(k1>0 && !(action[game]==0))
+						current_node->set_child(action[game], Trustee_node_r); //tie the trustee node to the investor node visited before
+						if(k1>0 && !(action[game]==0))	//if the trustee model is non trivial (level 1 and investor gave more than 0)
 						{
 
-							
-							for(int guilt=0; guilt < nob; ++guilt)
+							for(int guilt=0; guilt < nob; ++guilt) //simulate level 1 trustee response likelihoods, conditional on all possible guilt states
 							{
-								guilt_parameter[k1-1] = guilt;
-								pay = trustee_k( action[game], game, planning_horizon, guilt_parameter ,1, factor*simulation_iterations/10*(planning_horizon-game), beliefs , action, response,
+								guilt_parameter[k1-1] = guilt; //fix one guilt
+								pay = trustee_k( action[game], game, planning_horizon, guilt_parameter ,k1-1, factor*simulation_iterations/10*(planning_horizon-game), beliefs , action, response,
 								path_numbers, array_pay, ui_init_system, ut_init_system, investor_probabilities_system, trustee_rollout_likelihood_system, investor_choice_likelihood, trustee_choice_likelihood, factor); //only calc trustee, include inf in trustee
-
+								//return response likleihoods
 								for(int i=0; i < noa; ++i)
 								{	
 
@@ -1715,7 +1649,7 @@ std::vector<double> investor_k( int const& present_time
 								}								
 								for( int action_loc = 0; action_loc < noa; ++action_loc)
 								{
-									Trustee_node_r->set_exp_payoffs(action_loc,inv_exp_payoffs[guilt][action_loc],guilt);
+									Trustee_node_r->set_exp_payoffs(action_loc,inv_exp_payoffs[guilt][action_loc],guilt); //save response likelihoods in the trustee node
 								}							
 								
 							}	
@@ -1723,35 +1657,32 @@ std::vector<double> investor_k( int const& present_time
 						
 					}
 
-					if(k1>0 && !(action[game]==0))
+					if(k1==2 && !(action[game]==0)) //once node is known
 					{
-						exp_payoffs =Trustee_node_r->get_exp_payoffs();
-						response[game] = softmax(exp_payoffs[trustee_guilt_belief],25);
+						exp_payoffs =Trustee_node_r->get_exp_payoffs(); //get response likelihoods
+						response[game] = softmax(exp_payoffs[trustee_guilt_belief],25); //simulate response from likelihoods
 					}
-					else
-					{
-						response[game]= (action[game]==0 ? 0 :  softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[game]),26));
-					}
+
 					Trustee_node_r->inc_action_count(response[game]);
 					
-					if(k1==2  && !(action[game]==0) ) 
+					if(k1==2  && !(action[game]==0) ) //for a non trivial action, the trustee assumes the investor is updating their beliefs about them in a level 0 manner
 					{
 						for( int belief=0; belief<nob; ++belief)
 						{				
-							beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]);
+							beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]); //level 0 belief update
 						}
 					}			
 
-					value[game] = ui_init_system[investor_guilt](action[game], response[game]);
+					value[game] = ui_init_system[investor_guilt](action[game], response[game]); //evaluate exchange
 
-					current_node = Trustee_node_r->get_child(response[game]);			
+					current_node = Trustee_node_r->get_child(response[game]);	//set investor node, following trustee action
 				
 				}
-				sum = 0.0;
+				sum = 0.0;//reset sum
 				for( int i = game-1; i >= present_time; --i)
 				{
-					sum += value[i];
-					path[i]->set_payoff(action[i], path[i]->get_payoff(action[i]) + (sum - path[i]->get_payoff(action[i]) ) / (path[i]->get_action_count(action[i])));
+					sum += value[i]; //sum up last to first
+					path[i]->set_payoff(action[i], path[i]->get_payoff(action[i]) + (sum - path[i]->get_payoff(action[i]) ) / (path[i]->get_action_count(action[i]))); //update nodes back to forth
 				}
 				
 			}		
@@ -1765,41 +1696,41 @@ std::vector<double> investor_k( int const& present_time
 			{
 				for(int belief=0; belief < nob; ++belief)
 				{
-					beliefs[level][belief] = initial_beliefs[level][belief];
+					beliefs[level][belief] = initial_beliefs[level][belief]; //fill in initial prior belief parameters
 				}
 			}
-
-			trustee_guilt_belief = softmax(belief_probability,27);		
+							
+			trustee_guilt_belief = softmax(belief_probability,22);		//sample new intentional model of the partner
 	
-			current_node = root;
+			current_node = root; //start simulation at the root always
 			
-			game = present_time;
-			for(; game < planning_horizon; ++game)
+			game = present_time; //reset simulation time to present time
+			for(; game < planning_horizon; ++game) //calculate till the planning horizon
 			{
-
-				if(!current_node)
+				if(!current_node) //if the current now has not been instantiated yet
 				{		
-					current_node = new True_node();
-					Trustee_node_r-> set_child(response[game-1], current_node);
-					path[game] = current_node;
-					action[game] = softmax(row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),28); //build new rollout next
-					value[game] = ui_init_system[investor_guilt](action[game], softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[game]),29));
+					current_node = new True_node(); //create new investor node object. 
+					Trustee_node_r-> set_child(response[game-1], current_node); //tie the investor node to the trustee node visited before
+					path[game] = current_node; //set path to the current node
+					action[game] = softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),90); //choose the optimal action based on the current guilt belief
+					value[game] = ui_init_system[investor_guilt](action[game], softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[game]),23)); //evaulate exchange
 					current_node->inc_action_count(action[game]);
-
-					for(int i = game + 1; i < planning_horizon; ++i)
+					
+					for(int i = game + 1; i < planning_horizon; ++i) //epsilon-greedy value estimate
 					{
-						last_action = softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),30);
-						last_response = softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], last_action),31);
+						last_action =softmax(Matrix_row(investor_probabilities_system[investor_guilt], trustee_guilt_belief),95);
+						last_response = softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], last_action),24);
 						value[game] += ui_init_system[investor_guilt](last_action, last_response);
 					}					
-				
-					++game;
-					break;
+					++game; //increment time, to properly value update below
+					break; //break current simulation after rollout, jump to value update and do next simulation
 				}
 
-				path[game] = current_node;		
-
-					if(k1>1 && !(current_node->is_rolled_out()))
+				path[game] = current_node;		// always track the current node
+				
+				if(!(current_node->is_rolled_out())) //if rollout has not happened yet
+				{
+					if(k1==2) //we need to include level 0 action values, for the simulation of the level 1 trustee below
 					{
 						summe=0;
 						max =0;
@@ -1807,186 +1738,180 @@ std::vector<double> investor_k( int const& present_time
 						num_act=0;
 						counter=0;
 
-						if(game>0)
+						if(game>0) //unless we are in the very initial round
 						{
-							for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum)
+							for(int hist_sum= 0; hist_sum < (game) ; ++hist_sum) //transform the action and response histories to ActionResponsePairs
 							{
 								sorted_hist[hist_sum]=(action[hist_sum]==0 ? 0:((action[hist_sum]-1)*noa + 1 +response[hist_sum]));
 							}				
-							sorted_hist =custom_sort(sorted_hist, game-1);	
+							sorted_hist =custom_sort(sorted_hist, game-1);	//sort the action-response histories smallest to largest
 							for(int hist_sum= 0; hist_sum <(game); ++hist_sum)
 							{
-								if(!(sorted_hist[hist_sum]==0))
+								if(!(sorted_hist[hist_sum]==0)) //if the action pair was not 0-0, then there is a number of possible paths associated to this history at the given position
 								{
-									max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max);
-									if(sorted_hist[hist_sum] < old_max)
+									max = (sorted_hist[hist_sum] > max ? sorted_hist[hist_sum]:max); //check if the current entry is bigger than the last
+									if(sorted_hist[hist_sum] < old_max) //double check if sort worked
 									{
 										cout << "ERROR: sort didn't work" << endl;
 									}										
-									if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1))
+									if(!(sorted_hist[hist_sum]==old_max) && hist_sum < (game-1)) //if we are not at the last step and the maximum has increased
 									{
 										for(int up=old_max; up < sorted_hist[hist_sum]; ++up)
 										{
-											summe += path_numbers[up][(game)-hist_sum-1];
+											summe += path_numbers[up][(game)-hist_sum-1]; //add a few extra paths, due to the maximum having increased
 										}
 									}
-									if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1))
+									if(!(sorted_hist[hist_sum]==old_max) && hist_sum == (game-1)) //if we are at the last step, but the maximum has increased once more
 									{
-										summe += sorted_hist[hist_sum]-old_max;
+										summe += sorted_hist[hist_sum]-old_max; //add another number of extra paths, due to the maximum having increased at the last step
 									}
-									old_max = max;									
+									old_max = max;	//set old_max to max for checking purposes
 								}
-								counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //Need a min here								
+							counter += path_numbers[0][(game)-hist_sum-1]*noa*nob*(global_time_horizon-(game-hist_sum-1)); //add the full number of ordered paths between the 2 histories							
 							}
-							num_act = counter+(summe)*noa*nob*(global_time_horizon-(game));
-						}		
-						
+							num_act = counter+(summe)*noa*nob*(global_time_horizon-(game)); //sum up read out variables to find the correct entry in the level 0 precalculated structure
+						}										
+								
+					
 						for(int belief=0; belief < nob ; ++belief)
 						{
 							for(int possible_action =0; possible_action < noa; ++possible_action)
 							{
-								current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief);
+								current_node->set_exp_payoffs(possible_action,array_pay[num_act + belief*noa + (planning_horizon-game-1)*noa*nob+possible_action],belief); //readout precalculated values
 							}
 						}	
-						current_node->rollout_done();						
-					}	
+					}
+					current_node-> rollout_done(); //note node is now rolled out
+				}					
+
+				int unvisited_action = current_node->get_next_free_child();	//check if an action is still unexlored		
 				
-				unvisited_action = current_node->get_next_free_child();
-				
-			
 				if(unvisited_action == noa)
 				{
 					action[game] = current_node-> get_next_exploration( game == present_time ? iteration+5*(planning_horizon-present_time+1)+1 : (Trustee_node_r->get_action_count(response[game-1])) );
-
 				}
 				else
 				{
-					action[game] = unvisited_action;
+					action[game] = unvisited_action; //choose unexplored action
 				}
-				
-				if(k1==1) 
-				{
-					for(int belief=0; belief<nob; ++belief)
-					{				
-						beliefs[2][belief] += trustee_choice_likelihood(action[game],belief);
-					}
-				}					
+			
 
-				if(k1==2)
+				if(k1==2) //for the high level investor
 				{
-					exp_payoffs =current_node->get_exp_payoffs();
+					exp_payoffs =current_node->get_exp_payoffs(); //get the likelihoods of the level 0 investor making a particular choice
 					for(int belief=0; belief<nob; ++belief)
 					{
-						beliefs[1][belief]+= exp_payoffs[belief][action[game]]; 
+						beliefs[1][belief] += exp_payoffs[belief][action[game]]; //update trustee level 1 beliefs, by adding the level 0 investor action likelihood given guilt belief, to the prior parameters
 					}
 				}
-				et = nor(action[game]);
+				et = nor(action[game]); //note possible number of responses
 	
-				current_node->inc_action_count(action[game]);
-				Trustee_node_r = current_node->get_child(action[game]);
-				if(!Trustee_node_r)
+				current_node->inc_action_count(action[game]); //increment number of times the action was explored
+				Trustee_node_r = current_node->get_child(action[game]); //move trustee node following the investor action
+				if(!Trustee_node_r) //if the trustee node has not been instantiated yet
 				{
-	
-					Trustee_node_r = new True_node(); 
-					current_node->set_child(action[game], Trustee_node_r);
-					if(k1>0 &&!(action[game]==0))
-					{	
-							
-						for(int guilt=0; guilt < nob; ++guilt)
+					Trustee_node_r = new True_node(); //create new trustee node
+
+					current_node->set_child(action[game], Trustee_node_r); //tie the trustee node to the investor node visited before
+					if(k1>0 && !(action[game]==0))	//if the trustee model is non trivial (level 1 and investor gave more than 0)
+					{
+
+						for(int guilt=0; guilt < nob; ++guilt) //simulate level 1 trustee response likelihoods, conditional on all possible guilt states
 						{
-							guilt_parameter[1] =guilt;
-							pay = trustee_k( action[game], game, planning_horizon, guilt_parameter ,1, factor*simulation_iterations/10*(planning_horizon-game), beliefs , action, response,
+							guilt_parameter[k1-1] = guilt; //fix one guilt
+							pay = trustee_k( action[game], game, planning_horizon, guilt_parameter ,k1-1, factor*simulation_iterations/10*(planning_horizon-game), beliefs , action, response,
 							path_numbers, array_pay, ui_init_system, ut_init_system, investor_probabilities_system, trustee_rollout_likelihood_system, investor_choice_likelihood, trustee_choice_likelihood, factor); //only calc trustee, include inf in trustee
-							for(int i=0; i <noa; ++i)
-							{
+							//return response likleihoods
+							for(int i=0; i < noa; ++i)
+							{	
+
 								inv_exp_payoffs[guilt][i] =pay[i];
-							}							
-							for(int action_loc = 0; action_loc < noa; ++action_loc)
+							}								
+							for( int action_loc = 0; action_loc < noa; ++action_loc)
 							{
-								Trustee_node_r->set_exp_payoffs(action_loc,inv_exp_payoffs[guilt][action_loc],guilt);
-							}																
-						}										
+								Trustee_node_r->set_exp_payoffs(action_loc,inv_exp_payoffs[guilt][action_loc],guilt); //save response likelihoods in the trustee node
+							}							
+							
+						}	
 					}
 					
 				}
 
-				if(k1>0 && !(action[game]==0))
+				if(k1==2 && !(action[game]==0)) //once node is known and response is non-trivial
 				{
-					exp_payoffs =Trustee_node_r->get_exp_payoffs();
-					response[game] = softmax(exp_payoffs[trustee_guilt_belief],33);
+					exp_payoffs =Trustee_node_r->get_exp_payoffs(); //get response likelihoods
+					response[game] = softmax(exp_payoffs[trustee_guilt_belief],25); //simulate response from likelihoods
 				}
-				else
-				{
-					response[game]= (action[game]==0 ? 0 :  softmax(Matrix_row(investor_choice_likelihood[trustee_guilt_belief], action[game]),34));
-				}
+
 				Trustee_node_r->inc_action_count(response[game]);
 				
-				if(k1==2  && !(action[game]==0)) 
+				if(k1==2  && !(action[game]==0) ) //for a non trivial action, the trustee assumes the investor is updating their beliefs about them in a level 0 manner
 				{
-					for(int belief=0; belief<nob; ++belief)
+					for( int belief=0; belief<nob; ++belief)
 					{				
-						beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]);
+						beliefs[2][belief]+=investor_choice_likelihood[belief](action[game],response[game]); //level 0 belief update
 					}
 				}			
 
-				value[game] = ui_init_system[investor_guilt](action[game], response[game]);
+				value[game] = ui_init_system[investor_guilt](action[game], response[game]); //evaluate exchange
 
-				current_node = Trustee_node_r->get_child(response[game]);			
+				current_node = Trustee_node_r->get_child(response[game]);	//set investor node, following trustee action
 			
 			}
-
-			sum = 0.0;
+			sum = 0.0;//reset sum
 			for( int i = game-1; i >= present_time; --i)
 			{
-				sum += value[i];
-				path[i]->set_payoff(action[i], path[i]->get_payoff(action[i]) + (sum - path[i]->get_payoff(action[i]) ) / (path[i]->get_action_count(action[i])));
+				sum += value[i]; //sum up last to first
+				path[i]->set_payoff(action[i], path[i]->get_payoff(action[i]) + (sum - path[i]->get_payoff(action[i]) ) / (path[i]->get_action_count(action[i]))); //update nodes back to forth
 			}
 			
-		}
+		}	
 		
-		sum =0.0;
+		sum =0.0; //reset sum
 		for(int i =0; i<noa; ++i)
 		{		
-			investor_payoff[i] = exp(1.0/temperature*(root-> get_payoff(i)));		
+			investor_payoff[i] = exp(1.0/temperature*(root-> get_payoff(i)));		//sum exponential Q values
 			sum += investor_payoff[i];
 		}
 		for(int i =0; i<noa; ++i)
 		{
-			investor_payoff[i] = investor_payoff[i]/sum;		
+			investor_payoff[i] = investor_payoff[i]/sum;//calculate action likelihood from exponential Q values
 		}	
-	delete root;
+		delete root; //delete tree
 	}
-	mempool.DeleteAll();
-	return investor_payoff;
+	mempool.DeleteAll(); //delete mempool
+	return investor_payoff; //return action likelihoods
 }
 
 
+//-------------------------------- End Agent Block -------------------------------------------------------------------------
 
-
+						
 int main(int argc, char* argv[])
-{	
-							
-	static std::vector<double> array_pay(302401125,0.0);
-	boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> path_numbers;
+{			
+	static std::vector<double> array_pay(302401125,0.0);	//storage for precalculated level 0 action likelihoods
+	boost::array<boost::array<int, global_time_horizon+1>,ActionResponsePairs> path_numbers;	//number of ordered paths having a given largest element
 	boost::array<boost::array<int, global_time_horizon>,ActionResponsePairs+1> correction_factors;		
-			
-	int count=0;	
-	int ncount=0; 
-	path_numbers[0][0]=1;
-	path_numbers[0][1]=ActionResponsePairs;
+	
+	//preparing the read out structure for the level 0 precalculated values
+	int count=0;	//start count - sum up path number
+	int ncount=0; 	//start ncount - sum up double counts of paths
+	path_numbers[0][0]=1; //at one step, all actions response pairs can occur once
+	path_numbers[0][1]=ActionResponsePairs; //at 2 steps, there are ActionResponsePairs many entries possible for the second entry if the first entry is 0
 	for(int act=0; act<ActionResponsePairs; ++act)
 	{
-		correction_factors[act][0] = -act;
+		correction_factors[act][0] = -act; //possible double counts
 	}	
 		
 	for(int act=1; act<ActionResponsePairs; ++act)
 	{
-		path_numbers[act][1]= path_numbers[0][1] +correction_factors[act][0];
-		count +=path_numbers[act][1];	
-		ncount -= path_numbers[act-1][1];
-		correction_factors[act][1] = ncount;	
+		path_numbers[act][1]= path_numbers[0][1] +correction_factors[act][0]; //path numbers of one step before - double counts
+		count +=path_numbers[act][1];	//build up path numbers
+		ncount -= path_numbers[act-1][1]; //build up correction factors
+		correction_factors[act][1] = ncount;	//set next correction factors
 	}
-		
+	
+	//repeat algorithm for successively longer histories
 	if(global_time_horizon>1)
 	{
 		path_numbers[0][2]= path_numbers[0][1]+ count;
@@ -2009,53 +1934,54 @@ int main(int argc, char* argv[])
 		correction_factors[0][t+1]=0;	
 	}					
 		
-	ifstream infile ("saved_0_3_investor_high_large.bin", ios::in | ios::binary);//|ios::ate);
-	infile.seekg (0, ios::beg);	
-	char * memblock;
-	memblock= new char[1209604504];		
-	ifstream::pos_type it =0;
-	double store =0.0;
-	long long unsigned int tick=0;
+	ifstream infile ("saved_0_3_investor_high_large.bin", ios::in | ios::binary);//load precalculated level 0 investor with 3 belief states
+	infile.seekg (0, ios::beg);	//beginning of file
+	char * memblock; //point to a large enough memory block
+	memblock= new char[1209604504];		//create a large enough memory block
+	ifstream::pos_type it =0; //start from the beginning
+	double store =0.0; //use a holder
+	long long unsigned int tick=0; //determine when to load second part of the precaculated file
 
-	infile.read( memblock,1209604504);	
-	it=0;
-	for(int t = -1; t <= global_time_horizon-2; ++t) 
+	infile.read( memblock,1209604504);	//read first block
+	it=0; //set counter to 0
+	for(int t = -1; t <= global_time_horizon-2; ++t) //go through time horizons short to long
 	{	
-		for(int paths = 1; paths <= path_numbers[0][t+1]; ++paths)
+		for(int paths = 1; paths <= path_numbers[0][t+1]; ++paths) //go through number of paths at each stage
 		{	
-			for(int y=0; y < (global_time_horizon-t-1);++y) 
+			for(int y=0; y < (global_time_horizon-t-1);++y) //search possible planning horizons
 			{
-				for(int belief=0; belief < nob; ++belief) 
+				for(int belief=0; belief < nob; ++belief) //search possible belief states
 				{			
-					for(int action= 0; action < noa; ++ action)	
+					for(int action= 0; action < noa; ++ action)	//go through all actions
 					{	
-						store = *(double*)&memblock[it];
-						array_pay[tick]=store; //fill in action likelihood
-						it += 8;
-						if(static_cast<int>(it) == 1209604504)
+						store = *(double*)&memblock[it]; //read next value to holder
+						array_pay[tick]=store; //fill in action likelihood into array pay structure
+						it += 8; //move indicator by the size of a double = 8
+						if(static_cast<int>(it) == 1209604504) //once block has been read
 						{
-							infile.seekg(it);
-							infile.read(memblock,1209604446);
-							it=0;
+							infile.seekg(it); //move to position
+							infile.read(memblock,1209604446); //read next block
+							it=0; //reset counter
 						}
-						++tick;						
+						++tick;	//check for debugging purposes	
 					}
 				}	
 			}		
 		}			
 	}
-	infile.close();	
+	infile.close();	//close file
 		
-	delete[] memblock;	
+	delete[] memblock;	//free a huge chunk of memory
 
-	boost::array<double,noa>  investor_payoff;
-	boost::array<double,noa>  trustee_payoff;	
+	boost::array<double,noa>  investor_payoff; //create a holder for investor likelihoods
+	boost::array<double,noa>  trustee_payoff;	//create a holder for trustee likelihoods
 	double sum =0.0;
-	int d1;
-	int d2;
-	int no_sub;
-	int start_id;
-	int end_id;
+
+	int d1; //holder for investor planning horizon
+	int d2; //holder for trustee planning horizon
+	int no_sub; //number of subjects to be analysed
+	int start_id; //first subject
+	int end_id; //last subject
 	
 	cout << "Enter number of subjects: ";
 	cin >> no_sub;
@@ -2076,7 +2002,7 @@ int main(int argc, char* argv[])
 	strcat (str, ".bin");	
 
 	
-	ifstream ifile (str, ios::in | ios::binary| ios::ate);
+	ifstream ifile (str, ios::in | ios::binary| ios::ate); //read prepared parameter file
 	ifstream::pos_type il;
 	char * melblock;		
     streampos size;	
@@ -2088,11 +2014,9 @@ int main(int argc, char* argv[])
 	ifile.close();
 	il =0;						
 	
-	
-	boost::array<int,global_time_horizon> sorted_hist;
-
-	static boost::array<boost::array<boost::array<int,global_time_horizon>,2>,8100> Subject_Games;
-	for(int sub_id=0; sub_id < no_sub; ++sub_id)
+	boost::array<int,global_time_horizon> sorted_hist; //holder for sorted history
+	static boost::array<boost::array<boost::array<int,global_time_horizon>,2>, 8100> Subject_Games; //potentially 8100 exchanges. Generally shorter
+	for(int sub_id=0; sub_id < no_sub; ++sub_id) //read in the exchanges
 	{
 		for(int turn=0; turn <global_time_horizon; ++turn)
 		{
@@ -2100,37 +2024,38 @@ int main(int argc, char* argv[])
 			il += sizeof *(int*)&melblock[il];			
 			Subject_Games[sub_id][1][turn]=*(int*)&melblock[il];
 			il += sizeof *(int*)&melblock[il];
-		}
+		}		
 	}
 	
-	delete[] melblock;	
+	delete[] melblock;	//free memory
 	
-	boost::array<boost::array<double, nob>, 3> trustee_belief_parameters;	
-	boost::array<boost::array<double, nob>, 3> investor_belief_parameters;	
+	boost::array<boost::array<double, nob>, 3> trustee_belief_parameters;	//holder for Dirichlet prior parameters
+	boost::array<boost::array<double, nob>, 3> investor_belief_parameters;	//holder for investor Dirichlet prior parameters
 
-	int investor_planning;
-	int trustee_planning;
-	int WI_ToM;
-	int WI_G;
-	int WI_P;
-	int WT_ToM;
-	int WT_G;
-	int WT_P;
-	double Tlike_max;
-	double Ilike_max;
-	double like=0.0;
-	double Tlike=0.0;
-	int k1;
-	int k2;	
-	double expectation;
-	int game;
-	long long unsigned int summe;
-	int max;
-	int old_max;
-	long long unsigned int num_act;
-	long long unsigned int counter;	
-	std::vector<double> holder(noa,0.0);
-	boost::array<double,nob> probabilities;	
+	int investor_planning;	//holds investor planning
+	int trustee_planning;	//holds trustee planning
+	int WI_ToM;	//Winning theory of mind investor
+	int WI_G;	//winning guilt investor
+	int WI_P;	//winning planning investor
+	int WT_ToM;	//winning theory of mind trustee
+	int WT_G;	//winning guilt trustee
+	int WT_P;	//winning planning trustee
+	double Tlike_max;	//reference likelihood to be beaten
+	double Ilike_max;	//reference investor likelihood to be beaten
+	double like=0.0;	//actual negative log likelihood of investor estimation
+	double Tlike=0.0;	//actual negative log likelihood of trustee estimation
+	int k1;	//investor theory of mind parameter
+	int k2;	//trustee theory of mind parameter
+	double expectation; //holder for an expectation
+	int game; //current time parameter
+	long long unsigned int summe; //level 0 read out parameter
+	int max;//level 0 read out parameter
+	int old_max;//level 0 read out parameter
+	long long unsigned int num_act;//level 0 read out parameter
+	long long unsigned int counter;	//level 0 read out parameter
+	std::vector<double> holder(noa,0.0);//action likelihood holder
+	boost::array<double,nob> probabilities;	//action probabilities boost array holder
+	//see the utility block above
 	Matrix ui_init;
 	Matrix_vector utpi_init;
 	Matrix_vector investor_choice_likelihood;
@@ -2162,14 +2087,11 @@ int main(int argc, char* argv[])
 	{ 
 		ut_init_system[system] = initialize_trustee_utility(system);
 		max_ut_index=initialize_max_ut_index(ut_init_system[system]);	
-		trustee_probabilities=initialize_trustee_probabilities(ut_init_system[system]);	
-		trustee_rollout_likelihood_system[system] =initialize_trustee_rollout_likelihood(trustee_probabilities, max_ut_index);		
+		trustee_rollout_likelihood_system[system] =initialize_trustee_rollout_likelihood( max_ut_index);		
 	}		
 	offer_utility=initialize_offer_utility(investor_choice_likelihood);
 	trustee_choice_likelihood = initialize_trustee_choice_likelihood(offer_utility);	
 
-	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> WT_trustee_belief_parameters;	
-	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> WI_investor_belief_parameters;	
 	boost::array<int,3> Planning;
 	Planning[0]=0;
 	Planning[1]=2;
@@ -2183,30 +2105,35 @@ int main(int argc, char* argv[])
 	strcpy (stra, OutputFile);
 	strcat (stra, ".bin");	
 
+	//store calculated beliefs
 	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> store_trustee_belief_parameters;	
 	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> store_investor_belief_parameters;	
 
-	ofstream ofs(stra, ofstream::out | ofstream::binary);	
-	int iteration = 1;
-	boost::array<int,1> multiplier;
-	multiplier[0]=1;	
+	//store beliefs at current winning model
+	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> WT_trustee_belief_parameters;	
+	boost::array<boost::array<boost::array<double, nob>, 3>,global_time_horizon> WI_investor_belief_parameters;		
+	
+	ofstream ofs(stra, ofstream::out| ofstream::binary);	//output maximum likelihood subject classification
+	int iteration = 1; //parameter for accuracy table
+	boost::array<int,1> multiplier;//parameter for accuracy table
+	multiplier[0]=1;//parameter for accuracy table
 	for(int sub_id= start_id; sub_id <end_id; ++sub_id)
 	{
-		Tlike_max=1000.0;
-		Ilike_max=1000.0;	
-		for(int val_guilt=0; val_guilt < nob ;++val_guilt)
+		Tlike_max=1000.0;	//initialize negative loglikelihoods to 1000 for estimation
+		Ilike_max=1000.0;	//initialize negative loglikelihoods to 1000 for estimation
+		for(int val_guilt=0; val_guilt < nob ;++val_guilt)	//run through all possible guilt values
 		{		
-			for(int val_ToM=0; val_ToM <2 ; ++val_ToM)
+			for(int val_ToM=0; val_ToM <2 ; ++val_ToM)	//run for both possible ToM settings
 			{
-				start = val_ToM;
-				for(int lookahead= start; lookahead < 3; ++lookahead)
+				start = val_ToM;	//fix current ToM value
+				for(int lookahead= start; lookahead < 3; ++lookahead)	//run through the 3 possible planning settings
 				{
 
-					d1 = Planning[lookahead];
-					d2 = Planning[lookahead];
-					like=0.0;
-					Tlike =0.0;				
-					for(int level=0; level < 3; ++level)  
+					d1 = Planning[lookahead]; //fill in investor planning steps for estimation
+					d2 = Planning[lookahead]; //fill in trustee planning steps for estimation
+					like=0.0;	//initialize negative loglikelihood to 0 for current simulation
+					Tlike =0.0;				//initialize trustee negative loglikelihood to 0 for current simulation
+					for(int level=0; level < 3; ++level)  //initialize all beliefs to uniform
 					{
 						for(int belief=0; belief < nob; ++belief)
 						{
@@ -2217,7 +2144,7 @@ int main(int argc, char* argv[])
 							}
 						}
 					}
-					for(int level=0; level < 3; ++level)  
+					for(int level=0; level < 3; ++level)  //initialize all trustee beliefs to uniform
 					{
 						for(int belief=0; belief < nob; ++belief)
 						{
@@ -2229,20 +2156,20 @@ int main(int argc, char* argv[])
 						}
 					}	
 
-					for(int time_step=0; time_step < global_time_horizon; ++time_step)
+					for(int time_step=0; time_step < global_time_horizon; ++time_step)	//estimation action likelihoods for given guilt, ToM and planning settings for all time steps
 					{
-						investor_planning = mini(time_step+d1+1, global_time_horizon);
+						investor_planning = mini(time_step+d1+1, global_time_horizon);	//current planning horizon investor
 						
-						trustee_planning= mini(time_step+d2+1, global_time_horizon);
-						guilt_parameter[2*val_ToM]=val_guilt;
+						trustee_planning= mini(time_step+d2+1, global_time_horizon);	//current planning horizon trustee
+						guilt_parameter[2*val_ToM]=val_guilt;	//current guilt parameter
 						holder = investor_k( time_step, investor_planning , guilt_parameter, 2*val_ToM, multiplier[iteration-1]*simulation_iterations/10*(investor_planning-time_step), investor_belief_parameters, Subject_Games[sub_id][0], Subject_Games[sub_id][1],
 						path_numbers, array_pay, ui_init_system, ut_init_system, investor_probabilities_system, trustee_rollout_likelihood_system, investor_choice_likelihood, trustee_choice_likelihood, multiplier[(iteration-1)]);
 						for(int i=0; i <noa ; ++i)
 						{
-							investor_payoff[i]=holder[i];							
+							investor_payoff[i]=holder[i];	//move caluculated action likelihoods between holders (once necessary due to a problem with the softmax specification)						
 						}					
-						like += -log(investor_payoff[Subject_Games[sub_id][0][time_step]]);			
-						if(val_ToM==0)
+						like += -log(investor_payoff[Subject_Games[sub_id][0][time_step]]);		//add negative loglikelihood of current investor action under current parameters
+						if(val_ToM==0)	//update level 0 trustee beliefs of investor
 						{
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{	
@@ -2252,7 +2179,7 @@ int main(int argc, char* argv[])
 					
 
 					
-						if(val_ToM==1)
+						if(val_ToM==1) //update level 1 trustee beliefs of investor
 						{
 
 							game = time_step;
@@ -2301,7 +2228,7 @@ int main(int argc, char* argv[])
 							}
 						}
 		
-						if(val_ToM==1)
+						if(val_ToM==1) //update level 2 investor beliefs about level 1 trustee beliefs of investor
 						{
 							game = time_step;
 							summe=0;
@@ -2344,11 +2271,11 @@ int main(int argc, char* argv[])
 							}						
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
 							{
-								investor_belief_parameters[1][guilt_belief]+=array_pay[num_act + guilt_belief*noa + (investor_planning-game-1)*noa*nob+Subject_Games[sub_id][0][time_step]];
+								investor_belief_parameters[1][guilt_belief]+=array_pay[num_act + guilt_belief*noa + (investor_planning-game-1)*noa*nob+Subject_Games[sub_id][0][time_step]];							
 							}		
 						}
 
-						if(!(Subject_Games[sub_id][0][time_step]==0))
+						if(!(Subject_Games[sub_id][0][time_step]==0)) //if the trustee has a nontrivial response, calculate its likelihood
 						{
 							sum =0.0;
 							guilt_parameter[val_ToM]=val_guilt;
@@ -2360,7 +2287,7 @@ int main(int argc, char* argv[])
 							}
 							Tlike += -log(trustee_payoff[Subject_Games[sub_id][1][time_step]]);
 						}
-						if(!(Subject_Games[sub_id][0][time_step]==0))
+						if(!(Subject_Games[sub_id][0][time_step]==0)) 
 						{						
 
 							if(val_ToM ==1)
@@ -2374,12 +2301,12 @@ int main(int argc, char* argv[])
 									{
 										trustee_payoff[i]=holder[i];
 									}
-									investor_belief_parameters[0][guilt_belief] += trustee_payoff[Subject_Games[sub_id][1][time_step]];	
+									investor_belief_parameters[0][guilt_belief] += trustee_payoff[Subject_Games[sub_id][1][time_step]];		//update level 2 investor beliefs about level 1 trustee 						
 								}
 							}
 						}
 						
-						if( val_ToM==0  && !(Subject_Games[sub_id][0][time_step]==0))
+						if( val_ToM==0  && !(Subject_Games[sub_id][0][time_step]==0))	//update level 0 investor beliefs about trustee
 						{
 			
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
@@ -2391,7 +2318,7 @@ int main(int argc, char* argv[])
 
 
 						
-						if(val_ToM==1  && !(Subject_Games[sub_id][0][time_step]==0))
+						if(val_ToM==1  && !(Subject_Games[sub_id][0][time_step]==0)) //update level 1 trustee beliefs about level 0 investor belief updates 
 						{
 
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
@@ -2400,7 +2327,7 @@ int main(int argc, char* argv[])
 							}
 						}
 						
-						if(val_ToM ==1  && !(Subject_Games[sub_id][0][time_step]==0))
+						if(val_ToM ==1  && !(Subject_Games[sub_id][0][time_step]==0)) //update level 2 investor beliefs about level 1 trustee beliefs about level 0 investor belief updates
 						{
 						
 							for(int guilt_belief=0; guilt_belief < nob; ++guilt_belief)
@@ -2409,24 +2336,23 @@ int main(int argc, char* argv[])
 
 							}								
 						}
-						for(int level=0; level < 3; ++level)  
+						for(int level=0; level < 3; ++level)  //store beliefs at end of current exchange
 						{
 							for(int belief=0; belief < nob; ++belief)
 							{					
 								store_investor_belief_parameters[time_step][level][belief]=investor_belief_parameters[level][belief];					
 								store_trustee_belief_parameters[time_step][level][belief]=trustee_belief_parameters[level][belief];	
 							}
-						}							
-					
+						}						
 					}
 
-					if(like < Ilike_max)
+					if(like < Ilike_max)	//if the negative loglikelihood of the investor has improved over the reference value
 					{
-						WI_ToM=2*val_ToM;
-						WI_G =val_guilt;
-						Ilike_max = like;
-						WI_P = d1;
-						for(int time_step =0; time_step < global_time_horizon; ++time_step)
+						WI_ToM=2*val_ToM;	//safe current ToM parameter
+						WI_G =val_guilt;	//safe current guilt parameter
+						Ilike_max = like;	//make current negative loglikelihood the new reference value
+						WI_P = d1;	//safe current planning steps ahead parameter
+						for(int time_step =0; time_step < global_time_horizon; ++time_step)	//safe prior beliefs at every step in the game
 						{
 							for(int k =0; k <3; ++k)
 							{
@@ -2437,14 +2363,14 @@ int main(int argc, char* argv[])
 							}
 						}
 					}
-					if(Tlike < Tlike_max)
+					if(Tlike < Tlike_max)	//if the negative loglikelihood of the trustee has improved over the reference value
 					{
 			
-						WT_ToM=val_ToM;
-						WT_G=val_guilt;
-						Tlike_max =Tlike;
-						WT_P =d2;
-						for(int time_step =0; time_step < global_time_horizon; ++time_step)
+						WT_ToM=val_ToM;	//safe current ToM parameter
+						WT_G=val_guilt;	//safe current guilt parameter
+						Tlike_max =Tlike;	//make current negative loglikelihood the new reference value
+						WT_P =d2;	//safe current planning steps ahead parameter
+						for(int time_step =0; time_step < global_time_horizon; ++time_step)	//safe prior beliefs at every step in the game
 						{
 							for(int k =0; k <3; ++k)
 							{
@@ -2459,7 +2385,7 @@ int main(int argc, char* argv[])
 				}
 			}
 		}
-		
+		//output the winning parameter settings, likelihoods and beliefs
 		ofs.write( reinterpret_cast<char*>( &Ilike_max ), sizeof Ilike_max );		
 
 		ofs.write( reinterpret_cast<char*>( &WI_ToM ), sizeof WI_ToM );		
@@ -2476,7 +2402,7 @@ int main(int argc, char* argv[])
 
 		ofs.write( reinterpret_cast<char*>( &WT_P ), sizeof WT_P );		
 
-		/*for(int time_step =0; time_step < global_time_horizon; ++time_step)
+		for(int time_step =0; time_step < global_time_horizon; ++time_step)
 		{
 			for(int k =0; k <3; ++k)
 			{
@@ -2496,11 +2422,11 @@ int main(int argc, char* argv[])
 					ofs.write( reinterpret_cast<char*>( &WT_trustee_belief_parameters[time_step][k][guilt_belief] ), sizeof WT_trustee_belief_parameters[time_step][k][guilt_belief] );
 				}
 			}
-		}	*/		
+		}		
 	}	
 	
 
 	
-	ofs.close();
+	ofs.close();	//close output stream
 
 }
