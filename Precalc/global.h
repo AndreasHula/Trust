@@ -588,9 +588,10 @@ Public License instead of this License. But first, please read
 <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 */
 
-using namespace std;
+using namespace std; 
 
-typedef boost::numeric::ublas::matrix<double> Matrix;
+//short hands for objects from boost we will be needing repeatedly
+typedef boost::numeric::ublas::matrix<double> Matrix;	
 typedef boost::numeric::ublas::matrix_row<const Matrix> Matrix_row;
 typedef boost::numeric::ublas::matrix_column<const Matrix> Matrix_column;
 typedef boost::numeric::ublas::zero_matrix<double> Zero_matrix;
@@ -609,56 +610,50 @@ const int ActionResponsePairs = 21;
 const int rbf =3; // risk benefit factor (the number that the offered amount is multiplied by)
 const double temperature =3.0; //softmax inverse temperature parameter
 //simulation specifier
-const unsigned int simulation_iterations =30000; //how often the iterated game is simulated 
-const double exploration_constant = 25.0; //bonus in exploration term
-const double eps =0.5;
+const unsigned int simulation_iterations =2500; //how often the iterated game is simulated 
+const double exploration_constant = 25.0; //bonus in Soft UCT exploration term
+const double eps =0.5; //epsilon for epsilon greedy searches
 
 
+double generate_uniform_distributed_value(); //draw a uniformly distributed random value on [0,1]
+double gamma_function(double z); //the gamma function from boost
+int pmax(int value); //all below 1 is 0
 
-void initialize_globals(string const & filename);
-double generate_uniform_distributed_value();
-double generate_beta_distributed_value(double alpha, double beta);
-double gamma_function(double z);
-int pmax(int value);
-boost::array<double,nob> generate_dirichlet_distributed_value(boost::array<double,nob> belief_values);
-boost::array<double,nob> Dirichlet_Multinomial_probabilities(boost::array<double,nob> belief_values);
-boost::array<int, global_time_horizon-1> custom_sort(boost::array<int, global_time_horizon-1> hist, int time);
+void print_matrix(Matrix const & m); //display function for debugging purposes
+std::vector<double> greedy_probabilities(unsigned int preferred_action, unsigned int actions); //create a set of greedy action probabilities for a given preffered action
 
-void print_matrix(Matrix const & m);
-std::vector<double> greedy_probabilities(unsigned int preferred_action, unsigned int actions);
-
-unsigned int softmax(Matrix_row const& probabilities, int const& Index);
-unsigned int softmax(Matrix_column const& probabilities, int const& Index);
+unsigned int softmax(Matrix_row const& probabilities, int const& Index); //apply the softmax action selection to a matrix row
+unsigned int softmax(Matrix_column const& probabilities, int const& Index); //apply the softmax action selection to a matrix column
 
 template <class T> //for boost array
-int softmax(const T& probabilities, int const& Ind)
+int softmax(const T& probabilities, int const& Ind)	//implement a softmax action selection on a given vector of probabilities
 {
-	double draw = generate_uniform_distributed_value();
-	int choice = 0;
+	double draw = generate_uniform_distributed_value(); //generate the reference value
+	int choice = 0; //see how many probabilities are below the generated value
 
-	std::vector<double> new_prob (probabilities.size(), 0.0);	
+	std::vector<double> new_prob (probabilities.size(), 0.0);	//ensure the vector is normalized
 	//include normalisation loop 
 	double norm= 0.0;
 	for(int i=0; i < probabilities.size() ; ++i)
 	{
-		norm += probabilities[i];
+		norm += probabilities[i]; //normalize just in case of a numerical imprecision
 	}
 	
 	for(int i=0; i < probabilities.size() ; ++i)
 	{
-		new_prob[i] = probabilities[i]/norm;
+		new_prob[i] = probabilities[i]/norm; //normalize just in case of a numerical imprecision
 	}
 	norm= 0.0;
 	for(int i=0; i < probabilities.size() ; ++i)
 	{
-		norm += new_prob[i];
+		norm += new_prob[i]; //normalize just in case of a numerical imprecision
 	}	
 
-	double sum = new_prob[0];	
+	double sum = new_prob[0];	//start with the first probability
 	while(sum < draw)
 	{
-		++choice;
-		if(choice >= probabilities.size())
+		++choice; //for every number of cumulative probabilities in "sum", that draw exceed, increment the choice
+		if(choice >= probabilities.size()) //erroneous case, give warning & stop
 		{
 			cout << "Error in softmax: choice: " << choice << " size: " << probabilities.size() << "Index" << Ind << endl;
 			cout << "sums to" << norm << endl;			
@@ -673,7 +668,7 @@ int softmax(const T& probabilities, int const& Ind)
 			cout << "Draw" << draw << endl;			
 			assert(false);
 		}
-		sum += new_prob[choice];
+		sum += new_prob[choice]; //increase the cumulative sum of probbailities until it exceeds draw
 	}
 
 	return choice;
@@ -681,12 +676,12 @@ int softmax(const T& probabilities, int const& Ind)
 
 
 
-inline unsigned int nor(unsigned int action)
+inline unsigned int nor(unsigned int action) //determine number of responses (nor) given a certain action
 {
 	return (action == 0 ? 1 : noa);
 }
 
-inline int minimalize(double value, boost::array<double,noa> reference)
+inline int minimalize(double value, boost::array<double,noa> reference)	//determine minimal distance to a given grid, return the index of the closest grid point
 {
 	int min_int=0;
 	double distance =40.0;
@@ -703,13 +698,13 @@ inline int minimalize(double value, boost::array<double,noa> reference)
 }
 
 
-inline int math_round(double val)
+inline int math_round(double val) //round mathematically
 {
 	return static_cast<int>(val + 0.5);
 }
 
 template<class T>
-void print_vector(T const& v)
+void print_vector(T const& v)	//template to print a vector
 {
 	for(unsigned int i = 0; i < v.size(); ++i)
 	{
@@ -719,7 +714,7 @@ void print_vector(T const& v)
 }
 
 template <class T>
-void greedy_probabilities(T begin, T end, unsigned int preferred_action)
+void greedy_probabilities(T begin, T end, unsigned int preferred_action)	//build greedy action probabilities for a vector of given size
 {
 	unsigned int actions = distance(begin, end);
 	
@@ -736,44 +731,44 @@ void greedy_probabilities(T begin, T end, unsigned int preferred_action)
 	}
 }
 
-class True_node : public MEMORY_OBJECT
+class True_node : public MEMORY_OBJECT	//Define the tree nodes as necessary for POMCP
 {
 	public:
 		True_node():
-				  m_free_child(0) 
-				 , m_expectation(0.0)
-				 , m_rolled_out(false)	
+				  m_free_child(0) //all children are free initially, first free action is 0
+				 , m_expectation(0.0)	//expected value is 0
+				 , m_rolled_out(false)	//rollout has not taken place 
 		{
 			for(int i = 0; i < noa; ++i)
 			{
-				m_children[i] =NULL;	
-				m_payoff[i] = 0.0;
-				m_action_count[i] = 0;
+				m_children[i] =NULL;	//every action defines a potential child
+				m_payoff[i] = 0.0;	//every action has an action preference
+				m_action_count[i] = 0;	//track how often an action has been taken
 			}
 		}
 
 		
-		True_node* get_child(int action) const
+		True_node* get_child(int action) const	//find the child node pointed to by the action
 		{
 			return m_children[action];
 		}
 		
-		void set_exp_payoffs(int action, double value, int trustee_belief)
+		void set_exp_payoffs(int action, double value, int trustee_belief) //set a likelihood value for a given partner action conditional on a partner belief
 		{
 			m_exp_payoffs[trustee_belief][action] = value;
 		}
 		
-		boost::array<boost::array<double, noa>, nob> const& get_exp_payoffs() const
+		boost::array<boost::array<double, noa>, nob> const& get_exp_payoffs() const //return the stored partner likelihoods
 		{
 			return m_exp_payoffs;
 		}		
 		
-		int get_next_free_child() const
+		int get_next_free_child() const	//find the next unexplored action
 		{
 			return m_free_child;
 		}
 		
-		void set_child(int action, True_node* child)
+		void set_child(int action, True_node* child)	//set an existing node object as child on a given action, provided there is no child there yet
 		{
 			assert(!m_children[action]);
 			
@@ -785,17 +780,17 @@ class True_node : public MEMORY_OBJECT
 			}
 		}
 		
-		double get_payoff(int action) const
+		double get_payoff(int action) const //return the action likelihood for a given action
 		{
 			return m_payoff[action];
 		}
 		
-		void set_payoff(int action, double value)
+		void set_payoff(int action, double value) //set the action likelihood for a given action
 		{
 			m_payoff[action] = value;
 		}
 		
-		void inc_action_count(int action)
+		void inc_action_count(int action) //increase the action count on a given action
 		{
 			++m_action_count[action];
 			
@@ -805,54 +800,54 @@ class True_node : public MEMORY_OBJECT
 			}
 		}
 		
-		unsigned int get_action_count(int action)
+		unsigned int get_action_count(int action)	//return the current action count
 		{
 			return m_action_count[action];
 		}
 		
-		void rollout_done()
+		void rollout_done()	//note that the rollout has been done
 		{
 			m_rolled_out = true;
 		}
 		
-		bool is_rolled_out() const
+		bool is_rolled_out() const	//check if the rollout has been done
 		{
 			return m_rolled_out;
 		}
 		
-		void set_expectation(double value)
+		void set_expectation(double value) //set a new value to the expectation
 		{		
 			m_expectation = value;
 		}
 		
-		double get_expectation()
+		double get_expectation()	//return the saved expectation value
 		{
 			return m_expectation;
 		}
 		
-		int get_next_exploration(int current_count) //expects that all children have been constructed!
+		int get_next_exploration(int current_count) //Soft UCT - expects that all children have been constructed!
 		{
 			boost::array<double,noa> exploration; 
 			double sum =0.0;
 
 				for(int action = 0; action < noa; ++action)
-				{
+				{	//get exponential Q values plus exploration bonus
 					exploration[action] = exp(1.0/temperature*(m_payoff[action] + exploration_constant*sqrt(log(static_cast<double>(current_count))/(m_action_count[action])))); 
 					sum += exploration[action];
 				}
 
 				for(int action = 0; action < noa; ++action)
 				{
-					exploration[action] = exploration[action]/sum;
+					exploration[action] = exploration[action]/sum;	//determine actual action preference under exploration bonus
 				}
 
-			int choice =softmax(exploration, 50);
+			int choice =softmax(exploration, 50); //make a softmax choice on the action preference
 			
 			return choice;
 		}
 
 
-		~True_node()
+		~True_node()	//destructor for the tree structure
 		{
 	
 			for(int i=0; i <noa; ++i)
@@ -876,7 +871,7 @@ class True_node : public MEMORY_OBJECT
 		double m_expectation;
 };
 
-class Value_Node : public MEMORY_OBJECT
+class Value_Node : public MEMORY_OBJECT	//level 0 investor precalculation structure - function are analogous to the true_node object, but children can ActionResponsePairs many instead
 {
 	public:
 		Value_Node(int horizon):
@@ -884,15 +879,15 @@ class Value_Node : public MEMORY_OBJECT
 		{
 			for(int b=0; b<nob;++b)
 			{		
-					m_expectation[b]=std::vector<double>(m_horizon+1,0.0);
+					m_expectation[b]=std::vector<double>(m_horizon+1,0.0);	//expected value of the node, given 
 			}
 			for(int b=0; b<nob;++b)
 			{
-						m_payoff[b] = Zero_matrix(m_horizon+1,noa);
+						m_payoff[b] = Zero_matrix(m_horizon+1,noa);	//include payoffs for all possible planning horizons
 			}
 			for(unsigned int i = 0; i < ActionResponsePairs; ++i)
 			{
-				m_history_children[i]=NULL;
+				m_history_children[i]=NULL;	// initialize pointers
 			}
 		}	
 
